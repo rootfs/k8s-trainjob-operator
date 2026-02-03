@@ -1,0 +1,462 @@
+# ════════════════════════════════════════════════════════════════
+# Example 1: Llama 3 70B training on 32 H100 nodes (256 GPUs)
+# ════════════════════════════════════════════════════════════════
+apiVersion: training.vsr.dev/v1alpha1
+kind: TrainJob
+metadata:
+  name: llama3-70b-pretrain
+  namespace: training
+  labels:
+    team: llm-foundations
+    priority: high
+spec:
+  model: llama-3-70b
+  image: ghcr.io/vsr/llama:v2.4.0-cu124
+
+  # Cluster shape
+  numNodes: 32
+  gpusPerNode: 8
+
+  # 4D Parallelism: TP=8 (within node via NVLink), PP=4, FSDP=8 (auto)
+  tpDegree: 8
+  ppDegree: 4
+
+  precision: bf16
+
+  nodeSelector:
+    nvidia.com/gpu.product: "NVIDIA-H100-SXM5-80GB"
+    topology.kubernetes.io/zone: "gpu-zone-1"
+
+  # Model architecture — enables memory + bandwidth validation
+  modelSpec:
+    paramsBillions: 70
+    hiddenDim: 8192
+    numLayers: 80
+    numHeads: 64
+    numKVHeads: 8           # GQA: 8 KV heads (Llama 3 uses GQA)
+    seqLen: 8192
+    microBatchSize: 2
+    activationCheckpointing: true
+
+  # Checkpoint every 30 min, keep last 3, validate each save
+  checkpoint:
+    enabled: true
+    intervalMinutes: 30
+    storagePath: /checkpoints
+    retainCount: 3
+    validateOnSave: true
+
+  maxRuntime: "168h"  # 7 days
+
+  command: ["torchrun"]
+  args:
+    - "--nnodes=$(NNODES)"
+    - "--nproc_per_node=$(NPROC_PER_NODE)"
+    - "--rdzv_backend=c10d"
+    - "--rdzv_endpoint=$(MASTER_ADDR):$(MASTER_PORT)"
+    - "train.py"
+    - "--model=llama-3-70b"
+    - "--precision=$(PRECISION)"
+    - "--tp=$(TP_DEGREE)"
+    - "--pp=$(PP_DEGREE)"
+    - "--fsdp=$(FSDP_DEGREE)"
+    - "--checkpoint-dir=$(CHECKPOINT_DIR)"
+
+  env:
+    - name: WANDB_PROJECT
+      value: llama3-pretrain
+    - name: TOKENIZERS_PARALLELISM
+      value: "false"
+
+  cpuPerNode: "96"
+  memPerNode: "1024Gi"
+
+---
+# ════════════════════════════════════════════════════════════════
+# Example 2: Small fine-tuning job (skip prolog for speed)
+# ════════════════════════════════════════════════════════════════
+apiVersion: training.vsr.dev/v1alpha1
+kind: TrainJob
+metadata:
+  name: llama3-8b-lora-finetune
+  namespace: training
+spec:
+  model: llama-3-8b-lora
+  image: ghcr.io/vsr/llama-finetune:v1.2.0
+
+  numNodes: 2
+  gpusPerNode: 8
+  tpDegree: 4
+  ppDegree: 1
+  precision: bf16
+
+  nodeSelector:
+    nvidia.com/gpu.product: "NVIDIA-A100-SXM4-80GB"
+
+  checkpoint:
+    enabled: true
+    intervalMinutes: 15
+    storagePath: /checkpoints
+    retainCount: 2
+    validateOnSave: false
+
+  maxRuntime: "4h"
+  skipProlog: true   # Fine for short jobs on small clusters
+
+  command: ["torchrun"]
+  args:
+    - "--nnodes=2"
+    - "--nproc_per_node=8"
+    - "--rdzv_backend=c10d"
+    - "--rdzv_endpoint=$(MASTER_ADDR):$(MASTER_PORT)"
+    - "finetune.py"
+
+---
+# ════════════════════════════════════════════════════════════════
+# Example 3: What the webhook REJECTS
+# ════════════════════════════════════════════════════════════════
+
+# This will be rejected by the validating webhook with:
+#   "TP degree (16) cannot exceed GPUs per node (8);
+#    tensor parallelism requires NVLink within a single node"
+#
+# apiVersion: training.vsr.dev/v1alpha1
+# kind: TrainJob
+# metadata:
+#   name: bad-tp-config
+# spec:
+#   model: test
+#   image: test:latest
+#   numNodes: 4
+#   gpusPerNode: 8
+#   tpDegree: 16        # ERROR: > 8 GPUs per node
+#   ppDegree: 1
+#   checkpoint:
+#     enabled: false
+#     storagePath: /tmp
+
+# This will be rejected with:
+#   "FP8 training requires Hopper+ GPU; node selector specifies
+#    NVIDIA-A100-SXM4-80GB; use bf16 instead"
+#
+# apiVersion: training.vsr.dev/v1alpha1
+# kind: TrainJob
+# metadata:
+#   name: bad-fp8-on-a100
+# spec:
+#   model: test
+#   image: test:latest
+#   numNodes: 4
+#   gpusPerNode: 8
+#   tpDegree: 8
+#   ppDegree: 1
+#   precision: fp8      # ERROR: A100 doesn't support FP8
+#   nodeSelector:
+#     nvidia.com/gpu.product: "NVIDIA-A100-SXM4-80GB"
+#   checkpoint:
+#     enabled: false
+#     storagePath: /tmp
+
+# This will be rejected with:
+#   "Estimated per-GPU memory (87.3 GB) exceeds available GPU memory (72.0 GB).
+#    Solutions: increase TP degree (current: 2)..."
+#
+# 70B model with TP=2: each GPU holds 35B params worth of memory.
+# 35B × 2 bytes (bf16) = 65 GB just for params, plus grads + optimizer = OOM
+#
+# apiVersion: training.vsr.dev/v1alpha1
+# kind: TrainJob
+# metadata:
+#   name: bad-oom-low-tp
+# spec:
+#   model: llama-3-70b
+#   image: test:latest
+#   numNodes: 4
+#   gpusPerNode: 8
+#   tpDegree: 2          # ERROR: too low TP for 70B model
+#   ppDegree: 1
+#   precision: bf16
+#   nodeSelector:
+#     nvidia.com/gpu.product: "NVIDIA-H100-SXM5-80GB"
+#   modelSpec:
+#     paramsBillions: 70
+#     hiddenDim: 8192
+#     numLayers: 80
+#     numHeads: 64
+#     numKVHeads: 8
+#     seqLen: 8192
+#     microBatchSize: 4
+#     activationCheckpointing: false
+#   checkpoint:
+#     enabled: false
+#     storagePath: /tmp
+
+# This will be rejected with:
+#   "NumHeads (64) must be evenly divisible by TP degree (6);
+#    MHA splits attention heads across TP ranks"
+#
+# apiVersion: training.vsr.dev/v1alpha1
+# kind: TrainJob
+# metadata:
+#   name: bad-tp-heads-mismatch
+# spec:
+#   model: llama-3-70b
+#   image: test:latest
+#   numNodes: 4
+#   gpusPerNode: 8
+#   tpDegree: 6          # ERROR: 64 heads not divisible by 6
+#   ppDegree: 1
+#   precision: bf16
+#   nodeSelector:
+#     nvidia.com/gpu.product: "NVIDIA-H100-SXM5-80GB"
+#   modelSpec:
+#     paramsBillions: 70
+#     hiddenDim: 8192
+#     numLayers: 80
+#     numHeads: 64
+#     numKVHeads: 8
+#     seqLen: 8192
+#     microBatchSize: 2
+#   checkpoint:
+#     enabled: false
+#     storagePath: /tmp
+
+---
+# ════════════════════════════════════════════════════════════════
+# Example 4: AUTO-PARALLELISM — let the webhook decide TP/PP/FSDP
+# ════════════════════════════════════════════════════════════════
+#
+# With autoParallelism: true, you provide ONLY the cluster shape
+# and model name (or modelSpec). The mutating webhook derives:
+#   TP, PP, FSDP, CP, micro-batch, activation ckpt, precision
+#
+# After mutation, the object is annotated with the reasoning:
+#   training.vsr.dev/auto-parallelism-config: "TP=8 PP=4 FSDP=8 CP=1 ..."
+#   training.vsr.dev/auto-parallelism-reason: "auto-configured: TP=8 ..."
+apiVersion: training.vsr.dev/v1alpha1
+kind: TrainJob
+metadata:
+  name: llama3-70b-auto
+  namespace: training
+  labels:
+    team: llm-foundations
+spec:
+  model: llama-3-70b          # looked up in ModelRegistry
+  image: ghcr.io/vsr/llama:v2.4.0-cu124
+  autoParallelism: true        # <── the magic flag
+
+  # Cluster shape — this is all you specify
+  numNodes: 32
+  gpusPerNode: 8
+
+  nodeSelector:
+    nvidia.com/gpu.product: "NVIDIA-H100-SXM5-80GB"
+
+  # TP/PP/precision/micro-batch are left unset — webhook fills them in
+  # tpDegree: (auto)
+  # ppDegree: (auto)
+  # precision: (auto)
+
+  checkpoint:
+    enabled: true
+    storagePath: /checkpoints
+    validateOnSave: true
+
+  maxRuntime: "168h"
+
+  command: ["torchrun"]
+  args:
+    - "--nnodes=$(NNODES)"
+    - "--nproc_per_node=$(NPROC_PER_NODE)"
+    - "--rdzv_backend=c10d"
+    - "--rdzv_endpoint=$(MASTER_ADDR):$(MASTER_PORT)"
+    - "train.py"
+    - "--model=llama-3-70b"
+    - "--precision=$(PRECISION)"
+    - "--tp=$(TP_DEGREE)"
+    - "--pp=$(PP_DEGREE)"
+    - "--fsdp=$(FSDP_DEGREE)"
+    - "--cp=$(CP_DEGREE)"
+    - "--checkpoint-dir=$(CHECKPOINT_DIR)"
+
+  cpuPerNode: "96"
+  memPerNode: "1024Gi"
+
+---
+# ════════════════════════════════════════════════════════════════
+# Example 5: AUTO-PARALLELISM with explicit ModelSpec (custom model)
+# ════════════════════════════════════════════════════════════════
+#
+# For models NOT in the built-in registry, provide modelSpec directly.
+apiVersion: training.vsr.dev/v1alpha1
+kind: TrainJob
+metadata:
+  name: custom-13b-auto
+  namespace: training
+spec:
+  model: custom-moe-13b
+  image: ghcr.io/vsr/custom:v1.0.0
+  autoParallelism: true
+
+  numNodes: 8
+  gpusPerNode: 8
+
+  nodeSelector:
+    nvidia.com/gpu.product: "NVIDIA-H100-SXM5-80GB"
+
+  modelSpec:
+    paramsBillions: 13
+    hiddenDim: 5120
+    numLayers: 40
+    numHeads: 40
+    numKVHeads: 8
+    seqLen: 8192
+    microBatchSize: 4       # initial guess; webhook may override
+    activationCheckpointing: false
+
+  checkpoint:
+    enabled: true
+    storagePath: /checkpoints
+
+  maxRuntime: "48h"
+  command: ["torchrun"]
+  args: ["train.py"]
+
+---
+# ════════════════════════════════════════════════════════════════
+# Example 6: Llama-3-405B auto-config (massive model)
+# ════════════════════════════════════════════════════════════════
+#
+# The auto-configurator handles even 405B-scale models:
+#   - Forces activation checkpointing (can't fit without it)
+#   - Maximizes TP=8 to keep memory per GPU feasible
+#   - Sets PP to divide 126 layers evenly
+#   - Derives FSDP from remaining GPUs
+apiVersion: training.vsr.dev/v1alpha1
+kind: TrainJob
+metadata:
+  name: llama3-405b-auto
+  namespace: training
+spec:
+  model: llama-3-405b
+  image: ghcr.io/vsr/llama:v2.4.0-cu124
+  autoParallelism: true
+
+  numNodes: 128
+  gpusPerNode: 8
+
+  nodeSelector:
+    nvidia.com/gpu.product: "NVIDIA-H100-SXM5-80GB"
+
+  checkpoint:
+    enabled: true
+    storagePath: /checkpoints
+    validateOnSave: true
+
+  maxRuntime: "720h"  # 30 days
+  command: ["torchrun"]
+  args: ["train.py", "--model=llama-3-405b"]
+
+---
+# ════════════════════════════════════════════════════════════════
+# Example 7: What the mutating webhook AUTO-INJECTS (summary)
+# ════════════════════════════════════════════════════════════════
+#
+# When you submit Example 1 (manual config), the mutating webhook adds:
+#   - NCCL_ALGO=Ring, NCCL_NET=IB, NCCL_IB_HCA=..., etc.
+#   - Default checkpoint interval (30min) and retain count (3)
+#   - Default CP=1
+#
+# When you submit Example 4/5/6 (autoParallelism), it ALSO:
+#   - Sets tpDegree, ppDegree, cpDegree, precision
+#   - Sets modelSpec.microBatchSize and activationCheckpointing
+#   - Adds annotations with the full reasoning
+#
+# The gpu-monitor sidecar is now included directly in the worker
+# StatefulSet pod template by the reconciler (no pod webhook needed).
+# Prometheus scrape annotations are also set on the pod template.
+
+---
+# ════════════════════════════════════════════════════════════════
+# Example 8: Kueue integration — suspend-based admission control
+# ════════════════════════════════════════════════════════════════
+#
+# When Kueue manages the TrainJob, the workflow is:
+#   1. User submits TrainJob with kueue.x-k8s.io/queue-name label
+#   2. Mutating webhook sets spec.suspend=true (if not already set)
+#   3. Kueue sees the workload, holds it until quota is available
+#   4. Kueue sets spec.suspend=false when admitted
+#   5. Reconciler proceeds: prolog → workers → running
+#
+# Child resources (prolog Job, checkpoint Job) carry
+# kueue.x-k8s.io/queue-name=none so Kueue's webhook doesn't
+# intercept them — they're internal to the operator.
+apiVersion: training.vsr.dev/v1alpha1
+kind: TrainJob
+metadata:
+  name: llama3-70b-kueue
+  namespace: training
+  labels:
+    kueue.x-k8s.io/queue-name: gpu-training-queue
+spec:
+  model: llama-3-70b
+  image: ghcr.io/vsr/llama:v2.4.0-cu124
+  autoParallelism: true
+
+  numNodes: 32
+  gpusPerNode: 8
+
+  nodeSelector:
+    nvidia.com/gpu.product: "NVIDIA-H100-SXM5-80GB"
+
+  # suspend is auto-set to true by the mutating webhook when
+  # kueue.x-k8s.io/queue-name label is present. Kueue will
+  # set it to false when quota is granted.
+  # suspend: true  (auto-set by webhook)
+
+  checkpoint:
+    enabled: true
+    storagePath: /checkpoints
+    validateOnSave: true
+
+  maxRuntime: "168h"
+  command: ["torchrun"]
+  args:
+    - "--nnodes=$(NNODES)"
+    - "--nproc_per_node=$(NPROC_PER_NODE)"
+    - "--rdzv_backend=c10d"
+    - "--rdzv_endpoint=$(MASTER_ADDR):$(MASTER_PORT)"
+    - "train.py"
+
+---
+# ════════════════════════════════════════════════════════════════
+# Example 9: Without Kueue — no suspend, no queue label
+# ════════════════════════════════════════════════════════════════
+#
+# Without the kueue label, spec.suspend stays nil (falsy), and the
+# reconciler immediately starts the prolog. This is the standalone
+# mode for dedicated clusters without a queueing system.
+apiVersion: training.vsr.dev/v1alpha1
+kind: TrainJob
+metadata:
+  name: llama3-8b-standalone
+  namespace: training
+spec:
+  model: llama-3-8b
+  image: ghcr.io/vsr/llama-finetune:v1.2.0
+  numNodes: 2
+  gpusPerNode: 8
+  tpDegree: 4
+  ppDegree: 1
+  precision: bf16
+  skipProlog: true
+  enableSidecar: false  # disable gpu-monitor sidecar
+
+  checkpoint:
+    enabled: true
+    intervalMinutes: 15
+    storagePath: /checkpoints
+
+  maxRuntime: "4h"
+  command: ["torchrun"]
+  args: ["finetune.py"]

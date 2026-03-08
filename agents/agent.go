@@ -43,6 +43,21 @@ type ChatResponse struct {
 }
 
 func main() {
+	mode := envOrDefault("AGENT_MODE", "run")
+
+	switch mode {
+	case "run":
+		runAgent()
+	case "eval":
+		runEval()
+	case "iterate":
+		runIterate()
+	default:
+		log.Fatalf("unknown AGENT_MODE %q (valid: run, eval, iterate)", mode)
+	}
+}
+
+func runAgent() {
 	cfg, err := loadConfig()
 	if err != nil {
 		log.Fatalf("config error: %v", err)
@@ -50,36 +65,39 @@ func main() {
 
 	log.Printf("agent starting: role=%s repo=%s endpoint=%s", cfg.Role.Name, cfg.RepoURL, cfg.VLLMEndpoint)
 
-	// Step 1: Clone the repository
 	if err := gitClone(cfg); err != nil {
 		log.Fatalf("git clone failed: %v", err)
 	}
 
-	// Step 2: Read AGENCY.md for context
 	agencyContent, err := readAgency(cfg.WorkDir)
 	if err != nil {
 		log.Printf("warning: could not read AGENCY.md: %v", err)
 		agencyContent = "(no AGENCY.md found)"
 	}
 
-	// Step 3: Read this role's SKILL.md
 	skillContent, err := readSkill(cfg)
 	if err != nil {
 		log.Fatalf("could not read skill: %v", err)
 	}
 
-	// Step 4: Build system prompt
 	systemPrompt := buildSystemPrompt(cfg, skillContent, agencyContent)
 
-	// Step 5: Create agent branch
-	branchName := fmt.Sprintf("agent/%s/%d", cfg.Role.Name, time.Now().Unix())
+	runID := fmt.Sprintf("%d", time.Now().UnixNano())
+	branchName := fmt.Sprintf("agent/%s/%s", cfg.Role.Name, runID)
 	if err := gitCheckoutBranch(cfg.WorkDir, branchName); err != nil {
 		log.Fatalf("git checkout failed: %v", err)
 	}
 
-	// Step 6: Run the agent loop
-	if err := agentLoop(cfg, systemPrompt, branchName); err != nil {
+	collector := newTraceCollector(runID, cfg.Role.Name, branchName, cfg.VLLMModel, cfg.MaxTurns, cfg.DryRun)
+
+	if err := agentLoop(cfg, systemPrompt, branchName, collector); err != nil {
 		log.Fatalf("agent loop failed: %v", err)
+	}
+
+	if err := collector.writeTrace(cfg.WorkDir); err != nil {
+		log.Printf("warning: failed to write trace: %v", err)
+	} else {
+		log.Printf("trace written: agents/traces/%s_%s.json", cfg.Role.Name, runID)
 	}
 
 	log.Printf("agent finished: role=%s", cfg.Role.Name)
@@ -160,7 +178,7 @@ func buildSystemPrompt(cfg *Config, skill, agency string) string {
 	return b.String()
 }
 
-func agentLoop(cfg *Config, systemPrompt, branch string) error {
+func agentLoop(cfg *Config, systemPrompt, branch string, collector *TraceCollector) error {
 	messages := []ChatMessage{
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: fmt.Sprintf(
@@ -179,27 +197,28 @@ func agentLoop(cfg *Config, systemPrompt, branch string) error {
 
 		resp, err := chatCompletion(client, cfg, messages, tools)
 		if err != nil {
+			collector.finish("error", err.Error(), turn)
 			return fmt.Errorf("chat completion failed at turn %d: %w", turn, err)
 		}
 
 		if len(resp.Choices) == 0 {
+			collector.finish("error", "empty response", turn)
 			return fmt.Errorf("empty response from LLM at turn %d", turn)
 		}
 
 		choice := resp.Choices[0]
 		messages = append(messages, choice.Message)
 
-		// If the LLM responded with text (no tool calls), we're either done or it's thinking
 		if len(choice.Message.ToolCalls) == 0 {
 			log.Printf("LLM response (no tool calls): %s", truncate(choice.Message.Content, 200))
 			if choice.FinishReason == "stop" {
 				log.Println("LLM finished (stop)")
+				collector.finish("stop", choice.Message.Content, turn+1)
 				return nil
 			}
 			continue
 		}
 
-		// Execute each tool call
 		for _, tc := range choice.Message.ToolCalls {
 			log.Printf("tool call: %s(%s)", tc.Function.Name, truncate(tc.Function.Arguments, 100))
 
@@ -209,7 +228,9 @@ func agentLoop(cfg *Config, systemPrompt, branch string) error {
 				summary, _ := args["summary"].(string)
 				log.Printf("DONE: %s", summary)
 
-				// Push if not dry run
+				collectBuildStatus(cfg.WorkDir, collector)
+				collector.finish("done", summary, turn+1)
+
 				if !cfg.DryRun {
 					if pushResult, err := toolGitPush(cfg.WorkDir, map[string]interface{}{"branch": branch}); err != nil {
 						log.Printf("git push failed (non-fatal): %v: %s", err, pushResult)
@@ -220,11 +241,16 @@ func agentLoop(cfg *Config, systemPrompt, branch string) error {
 				return nil
 			}
 
-			result, err := executeTool(cfg.WorkDir, tc)
+			callStart := time.Now()
+			result, toolErr := executeTool(cfg.WorkDir, tc)
+			callDuration := time.Since(callStart)
+
+			collector.recordToolCall(turn, tc, result, toolErr, callDuration)
+
 			var content string
-			if err != nil {
-				content = fmt.Sprintf("ERROR: %v", err)
-				log.Printf("tool error: %s: %v", tc.Function.Name, err)
+			if toolErr != nil {
+				content = fmt.Sprintf("ERROR: %v", toolErr)
+				log.Printf("tool error: %s: %v", tc.Function.Name, toolErr)
 			} else {
 				content = result
 				log.Printf("tool result: %s -> %s", tc.Function.Name, truncate(result, 100))
@@ -238,8 +264,29 @@ func agentLoop(cfg *Config, systemPrompt, branch string) error {
 		}
 	}
 
+	collectBuildStatus(cfg.WorkDir, collector)
+	collector.finish("max_turns", fmt.Sprintf("reached %d turns", cfg.MaxTurns), cfg.MaxTurns)
 	log.Printf("max turns (%d) reached", cfg.MaxTurns)
 	return nil
+}
+
+// collectBuildStatus runs go build and go vet, recording pass/fail in the trace.
+func collectBuildStatus(workDir string, collector *TraceCollector) {
+	buildCmd := exec.Command("go", "build", "./...")
+	buildCmd.Dir = workDir
+	buildPassed := buildCmd.Run() == nil
+	collector.setBuild(buildPassed)
+
+	vetCmd := exec.Command("go", "vet", "./...")
+	vetCmd.Dir = workDir
+	vetPassed := vetCmd.Run() == nil
+	collector.setVet(vetPassed)
+
+	diffCmd := exec.Command("git", "diff", "--stat", "HEAD~1")
+	diffCmd.Dir = workDir
+	if out, err := diffCmd.Output(); err == nil {
+		collector.setDiffStat(strings.TrimSpace(string(out)))
+	}
 }
 
 func chatCompletion(client *http.Client, cfg *Config, messages []ChatMessage, tools []ToolDefinition) (*ChatResponse, error) {

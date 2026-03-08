@@ -1,0 +1,18 @@
+{
+  "role": "model-builder",
+  "task": "initial-model-registry",
+  "expected_files": [
+    "internal/webhook/model_registry.go"
+  ],
+  "forbidden_tools": [
+    "git_push"
+  ],
+  "must_call_tools": [
+    "read_file",
+    "edit_file",
+    "run_command",
+    "git_commit",
+    "done"
+  ],
+  "max_turns": 12
+}

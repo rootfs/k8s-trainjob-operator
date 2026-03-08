@@ -5,7 +5,8 @@ AGENT_BINARY ?= bin/trainjob-agent
 ROLE ?= model-builder
 
 .PHONY: all build test lint fmt vet clean docker-build docker-push run help \
-	agent-build agent-docker-build agent-docker-push agent-run agent-deploy agent-clean
+	agent-build agent-docker-build agent-docker-push agent-run agent-deploy agent-clean \
+	agent-eval agent-iterate agent-pipeline
 
 all: build
 
@@ -63,6 +64,25 @@ agent-deploy: ## Deploy agent infrastructure to K8s (namespace, RBAC, vLLM)
 
 agent-job: ## Launch a one-shot agent Job on K8s (set ROLE=model-builder)
 	sed 's/AGENT_ROLE_PLACEHOLDER/$(ROLE)/g' agents/manifests/agent-job-template.yaml | kubectl apply -f -
+
+agent-eval: agent-build ## Run eval on all agent traces (set VLLM_ENDPOINT= for LLM judge)
+	cd agents && AGENT_MODE=eval AGENT_WORKDIR=.. go run .
+
+agent-iterate: agent-build ## Run iterate: analyze eval reports, propose SKILL.md improvements
+	cd agents && AGENT_MODE=iterate AGENT_WORKDIR=.. go run .
+
+agent-iterate-apply: agent-build ## Run iterate and auto-apply high-priority proposals to SKILL.md
+	cd agents && AGENT_MODE=iterate AGENT_WORKDIR=.. ITERATE_APPLY=true go run .
+
+agent-pipeline: ## Full pipeline: run agent → eval → iterate (set ROLE=, AGENT_REPO_URL=, VLLM_ENDPOINT=)
+	@echo "=== Phase 1: Run Agent ==="
+	cd agents && AGENT_ROLE=$(ROLE) AGENT_DRY_RUN=true go run .
+	@echo ""
+	@echo "=== Phase 2: Evaluate Traces ==="
+	cd agents && AGENT_MODE=eval AGENT_WORKDIR=.. go run .
+	@echo ""
+	@echo "=== Phase 3: Iterate / Propose SKILL.md Updates ==="
+	cd agents && AGENT_MODE=iterate AGENT_WORKDIR=.. go run .
 
 agent-clean: ## Remove agent resources from K8s
 	kubectl delete namespace trainjob-agents --ignore-not-found

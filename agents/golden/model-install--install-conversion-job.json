@@ -1,0 +1,18 @@
+{
+  "role": "model-install",
+  "task": "install-conversion-job",
+  "expected_files": [
+    "internal/controller/install.go",
+    "api/v1alpha1/types.go"
+  ],
+  "forbidden_tools": [
+    "git_push"
+  ],
+  "must_call_tools": [
+    "read_file",
+    "run_command",
+    "git_commit",
+    "done"
+  ],
+  "max_turns": 15
+}

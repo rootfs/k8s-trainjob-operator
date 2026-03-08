@@ -788,21 +788,164 @@ This is a standalone agent rather than a reconciler phase because:
 - The serving cluster may be different from the training cluster
 - Deployment decisions (canary percentages, rollback triggers) are policy decisions that belong in a CD pipeline, not an operator
 
-### Running Agents
+### Run → Observe → Eval → Iterate Pipeline
+
+The agent system includes a built-in feedback loop. Each agent run produces a structured trace. Traces are evaluated by deterministic scorers and an LLM-as-judge. The iterate engine analyzes failure patterns across evaluations and proposes targeted SKILL.md improvements. Over time, this tightens the instructions and reduces repeat failures.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                                                                         │
+│   ┌───────┐     ┌─────────┐     ┌──────┐     ┌─────────┐              │
+│   │  RUN  │────►│ OBSERVE │────►│ EVAL │────►│ ITERATE │──┐           │
+│   └───────┘     └─────────┘     └──────┘     └─────────┘  │           │
+│       ▲                                                     │           │
+│       │              improved SKILL.md                      │           │
+│       └─────────────────────────────────────────────────────┘           │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**Phase 1: Run** — agent executes its task, producing code changes on a feature branch.
+
+```
+Agent binary (K8s Job)
+  │
+  ├── git clone, read AGENCY.md + SKILL.md
+  ├── vLLM chat loop with tool calling
+  ├── code edits, build verification, git commit
+  └── done() → git push → writes trace JSON
+                                │
+                                ▼
+                agents/traces/<role>_<run_id>.json
+```
+
+**Phase 2: Observe** — the trace captures every tool call with timing, arguments, errors, and outcome. This is automatic — every `agentLoop` writes a trace on exit.
+
+```json
+{
+  "run_id": "1741420800000000000",
+  "role": "model-builder",
+  "turns": 8,
+  "max_turns": 20,
+  "exit_reason": "done",
+  "build_passed": true,
+  "vet_passed": true,
+  "files_changed": ["internal/webhook/model_registry.go"],
+  "tool_calls": [
+    {"turn": 0, "tool": "read_file", "duration_ms": 12, "error": false},
+    {"turn": 1, "tool": "edit_file", "duration_ms": 8, "error": false},
+    {"turn": 2, "tool": "run_command", "duration_ms": 3400, "error": false},
+    ...
+  ]
+}
+```
+
+**Phase 3: Eval** — seven deterministic scorers + optional LLM-as-judge evaluate each trace.
+
+```
+┌─ Deterministic Scorers (no LLM needed) ─────────────────────────────┐
+│                                                                       │
+│  build_gate (w=3.0)         Did go build pass?              [0 or 1] │
+│  vet_gate (w=2.0)           Did go vet pass?                [0 or 1] │
+│  scope_adherence (w=2.5)    Files changed within WatchPaths? [0..1]  │
+│  protocol_compliance (w=1.5) Read AGENCY.md? Read before edit?       │
+│                              Called done()? Ran build?       [0..1]  │
+│  efficiency (w=1.0)         Turns used vs max_turns          [0..1]  │
+│  tool_error_rate (w=1.0)    % of tool calls that errored     [0..1]  │
+│  completion_signal (w=1.5)  Clean done() vs max_turns/error  [0..1]  │
+│                                                                       │
+├─ Golden Match (w=2.0, if golden case exists) ────────────────────────┤
+│                                                                       │
+│  expected_files             Were the right files modified?            │
+│  forbidden_tools            Were banned tools avoided?               │
+│  must_call_tools            Were required tools called?              │
+│  max_turns                  Did it finish within the budget?         │
+│                                                                       │
+├─ LLM-as-Judge (w=2.0, requires VLLM_ENDPOINT) ──────────────────────┤
+│                                                                       │
+│  Sends trace summary to a separate LLM instance for:                │
+│  • Task accomplishment assessment                                    │
+│  • Code change quality (focused? minimal? idiomatic?)                │
+│  • Software engineering practices                                    │
+│  Returns score 0.0-1.0 + reasoning + issues list                    │
+│                                                                       │
+└───────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+              agents/eval-reports/eval_<ts>.json
+              (per-role pass rate, avg scores, top issues)
+```
+
+A trace passes eval if: overall weighted score >= 0.6 AND no critical failure (build_gate=0 or scope_adherence=0).
+
+**Phase 4: Iterate** — the iterate engine reads all eval reports and traces, extracts recurring failure patterns, and proposes SKILL.md improvements.
+
+```
+┌─ Pattern Extraction ─────────────────────────────────────────────────┐
+│                                                                       │
+│  Scans all traces and eval reports for:                              │
+│  • Recurring low scores per role (e.g., sre scope_adherence < 0.8)  │
+│  • Anti-patterns: analysis paralysis (10+ reads, 0 edits)           │
+│  • Anti-patterns: repeated tool errors (same tool fails 3+ times)   │
+│  • Anti-patterns: budget exhaustion (max_turns exit)                 │
+│                                                                       │
+│  Groups by role + category, ranks by frequency and severity          │
+│                                                                       │
+├─ Proposal Generation ────────────────────────────────────────────────┤
+│                                                                       │
+│  For each pattern:                                                   │
+│                                                                       │
+│  With LLM (VLLM_ENDPOINT set):                                      │
+│    Sends current SKILL.md + patterns to LLM                         │
+│    LLM proposes targeted edits (section, action, content)            │
+│                                                                       │
+│  Without LLM (heuristic fallback):                                   │
+│    Maps pattern categories to predefined SKILL.md additions          │
+│    e.g., build_gate → add "CRITICAL: run go build before commit"    │
+│                                                                       │
+├─ Apply (optional, ITERATE_APPLY=true) ───────────────────────────────┤
+│                                                                       │
+│  Writes high-priority proposals into the actual SKILL.md files       │
+│  Appends new constraints/guidance to the relevant sections           │
+│  Agent reads updated SKILL.md on next run → behavior improves        │
+│                                                                       │
+└───────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+              agents/iterate-reports/iterate_<ts>.json
+              (patterns, proposals, applied changes)
+```
+
+### Running the Pipeline
 
 ```bash
 # Build the agent binary
 make agent-build
 
-# Run an agent locally (dry run)
+# --- Individual phases ---
+
+# Run an agent (dry run, writes trace)
 AGENT_ROLE=model-install AGENT_REPO_URL=https://github.com/rootfs/trainjob-operator \
   VLLM_ENDPOINT=http://localhost:8000/v1 make agent-run
 
-# Deploy agent infrastructure to K8s
-make agent-deploy
+# Evaluate all traces (deterministic scorers only)
+make agent-eval
 
-# Launch a one-shot agent Job
-make agent-job ROLE=model-install
+# Evaluate with LLM-as-judge
+VLLM_ENDPOINT=http://localhost:8000/v1 make agent-eval
+
+# Analyze patterns and propose SKILL.md improvements
+VLLM_ENDPOINT=http://localhost:8000/v1 make agent-iterate
+
+# Auto-apply high-priority proposals to SKILL.md files
+VLLM_ENDPOINT=http://localhost:8000/v1 make agent-iterate-apply
+
+# --- Full pipeline (run → eval → iterate) ---
+make agent-pipeline ROLE=model-builder
+
+# --- K8s deployment ---
+make agent-deploy           # deploy vLLM + RBAC + CronJobs
+make agent-job ROLE=sre     # one-shot agent Job
 ```
 
 ---
@@ -857,9 +1000,12 @@ examples/
   trainjob_sample.yaml           Sample CRs (manual, auto, Kueue, standalone, rejected configs)
 
 agents/
-  agent.go                       Agent main loop: git clone, vLLM chat, tool execution, git push
-  config.go                      Role definitions and runtime config (AGENT_ROLE, VLLM_ENDPOINT, etc.)
-  tools.go                       Tool implementations: read_file, edit_file, run_command, git_commit, etc.
+  agent.go                       Agent main loop + mode switch (run/eval/iterate)
+  config.go                      Role definitions and runtime config
+  tools.go                       Tool implementations (read_file, edit_file, run_command, etc.)
+  trace.go                       Trace types (AgentTrace, ToolRecord) and trace collector
+  eval.go                        Eval scorers (deterministic + LLM-as-judge) and report generator
+  iterate.go                     Iterate engine: pattern extraction, SKILL.md proposal generation
   AGENCY.md                      Shared coordination file: tasks, ownership, dependencies
   Dockerfile                     Agent container image (Go binary + git + shell tools)
   go.mod                         Agent Go module
@@ -872,6 +1018,10 @@ agents/
     cicd/SKILL.md                Build, test, release instructions
     model-eval/SKILL.md          Post-training evaluation and benchmarking instructions
     model-install/SKILL.md       Checkpoint conversion, registry push, serving config instructions
+  golden/                        Golden test cases (expected behavior per role/task)
+  traces/                        Agent run traces (auto-generated JSON)
+  eval-reports/                  Eval output (per-role scores, top issues)
+  iterate-reports/               Iterate output (failure patterns, SKILL.md proposals)
   manifests/
     vllm-deployment.yaml         vLLM inference server for agents
     agent-job-template.yaml      One-shot agent Job template

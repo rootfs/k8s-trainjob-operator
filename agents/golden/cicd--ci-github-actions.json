@@ -1,0 +1,17 @@
+{
+  "role": "cicd",
+  "task": "ci-github-actions",
+  "expected_files": [
+    ".github/workflows/ci.yaml"
+  ],
+  "forbidden_tools": [
+    "git_push"
+  ],
+  "must_call_tools": [
+    "read_file",
+    "write_file",
+    "run_command",
+    "done"
+  ],
+  "max_turns": 10
+}

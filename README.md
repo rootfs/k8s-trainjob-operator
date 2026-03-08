@@ -1,58 +1,85 @@
 # TrainJob Operator
 
-A Kubernetes operator for managing distributed GPU training jobs. It handles the full lifecycle: admission-time validation, pre-training GPU health checks, worker orchestration via StatefulSets, checkpoint management, and per-pod GPU monitoring sidecars.
+A Kubernetes operator for distributed GPU training, built around the idea that **AI agents should manage the infrastructure that trains and serves AI models** — and that the training pipeline, the serving engine, and the agents that operate them can form a self-improving loop.
 
-The original motivation was training multimodal embedding models for [vLLM Semantic Router](https://github.com/vllm-project/semantic-router) — things like fine-tuning CLIP, SigLIP, or BGE-style encoders that power the routing layer. Managing distributed GPU training for these models on Kubernetes had enough rough edges that it made sense to build an operator around it. The scope grew from there into a more general-purpose training job operator.
+The project has two parts:
 
-Built with [controller-runtime](https://github.com/kubernetes-sigs/controller-runtime) and [Kubebuilder](https://book.kubebuilder.io/) conventions.
+1. **The operator** — a K8s controller that manages the full training lifecycle: admission-time validation, auto-parallelism configuration, pre-training GPU health checks, worker orchestration, checkpoint management, and runtime monitoring. Built with [controller-runtime](https://github.com/kubernetes-sigs/controller-runtime).
 
-> **Disclaimer**: This is a hobby / exploration project. It is **not** production-ready and is not affiliated with any company. The code was written to learn and experiment with Kubernetes operator patterns for GPU training workloads. There are known gaps (see [Limitations](docs/comparison.md#limitations)). Use at your own risk.
+2. **The agent system** — 8 specialized AI agents that develop, evaluate, and operate the operator itself. They coordinate through git, run on vLLM (the same inference engine the trained models deploy to), and include a harness engineering pipeline that automatically tightens agent instructions based on observed failures.
 
----
+The original motivation was training multimodal embedding models for [vLLM Semantic Router](https://github.com/vllm-project/semantic-router) — fine-tuning CLIP, SigLIP, or BGE-style encoders for the routing layer. The system that trains these models is operated by agents that run on the same vLLM infrastructure the models deploy to. That circularity — agents improving the infrastructure that powers the agents — is the central design idea.
 
-## Problem Statement
-
-Kubernetes gives you primitives — Pods, Jobs, StatefulSets — but distributed GPU training needs a lot of domain-specific glue between "I want to train this model" and "training completed successfully." This operator tries to own that glue.
-
-The pain points it targets:
-
-- **Configuration correctness** — Getting TP/PP/FSDP/CP right for a given model and hardware combo is genuinely hard. The validating webhook and auto-parallelism advisor catch bad configs at admission time — fail fast, not fail late.
-- **Hardware reliability** — At scale, bad GPUs, degraded NVLink, flaky InfiniBand ports are expected. The prolog is a pre-flight check that runs before training starts.
-- **Runtime observability** — The GPU monitoring sidecar watches for stragglers, hardware anomalies, and step-time regressions while training runs.
-- **Checkpoint lifecycle** — The operator manages the save/validate/retain cycle and protects the last checkpoint on deletion.
-- **Model-infra co-design** — The auto-parallelism advisor matches model architecture to hardware, finding a good parallelism config automatically.
-
-This is not a scheduler (that's Kueue/Volcano), not a training framework (that's PyTorch/NeMo), and not a cluster provisioner. It's the **operational layer in between**.
+> **Disclaimer**: This is a hobby / exploration project. It is **not** production-ready and is not affiliated with any company. There are known gaps (see [Limitations](docs/comparison.md#limitations)). Use at your own risk.
 
 ---
 
-## Architecture
+## The Loop: Agent ↔ Infra ↔ Model Co-Design
 
 ```
-                     User creates TrainJob CR
-                               │
-                 ┌─────────────┴─────────────┐
-                 ▼                             ▼
-        Mutating Webhook              Validating Webhook
-        ├─ Auto-parallelism           ├─ TP ≤ GPUs/node?
-        │  (if enabled)               ├─ FP8 on Hopper+ only?
-        ├─ NCCL env vars              ├─ GPU memory estimation
-        └─ Default configs            └─ Head divisibility by TP
-                 │                             │
-                 └─────────────┬───────────────┘
-                               ▼
-                 ┌─────────────────────────────┐
-                 │   Reconciler State Machine   │
-                 │                              │
-                 │   Suspended ──► Pending       │
-                 │     └─► PrologRunning        │
-                 │           ├─► Running        │
-                 │           │    ├─► Succeeded │
-                 │           │    ├─► Checkpoint │
-                 │           │    └─► Failed    │
-                 │           └─► PrologFailed   │
-                 └─────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                                                                     │
+│   ┌──────────────────┐     ┌──────────────────┐                    │
+│   │   AI Agents       │     │   TrainJob        │                    │
+│   │                   │────►│   Operator        │                    │
+│   │ model-builder     │     │                   │                    │
+│   │ model-trainer     │     │ Webhooks:         │                    │
+│   │ infra             │     │  auto-parallelism │                    │
+│   │ ops               │     │  validation       │                    │
+│   │ sre               │     │  NCCL injection   │                    │
+│   │ cicd              │     │                   │                    │
+│   │ model-eval        │     │ Reconciler:       │                    │
+│   │ model-install     │     │  prolog → train   │                    │
+│   │                   │     │  → checkpoint     │                    │
+│   └──────┬───────────┘     │  → eval → install │                    │
+│          │                  └────────┬─────────┘                    │
+│          │                           │                               │
+│          │  agents develop           │  operator trains              │
+│          │  and improve the          │  embedding models             │
+│          │  operator code            │                               │
+│          │                           ▼                               │
+│          │                  ┌──────────────────┐                    │
+│          │                  │  vLLM Serving     │                    │
+│          │                  │                   │                    │
+│          └──────────────────│  Semantic Router  │                    │
+│             agents run on   │  serves trained   │                    │
+│             vLLM for        │  models for       │                    │
+│             reasoning       │  production       │                    │
+│                             └──────────────────┘                    │
+│                                                                     │
+│  The harness engineering loop:                                      │
+│  agents run → traces observed → eval scores → iterate improves     │
+│  SKILL.md → agents get better → operator improves → models improve │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
 ```
+
+The three layers reinforce each other:
+
+- **Agents** develop and operate the operator (code changes, monitoring, CI/CD). They run on vLLM with tool-calling support.
+- **Operator** trains embedding models on GPU clusters. It uses model architecture knowledge to auto-configure parallelism — the model and infrastructure are co-designed at admission time.
+- **vLLM** serves the trained models for production inference and powers the agents' reasoning. When agents improve the operator, the operator trains better models, which deploy to the same vLLM that makes the agents smarter.
+
+This is agent-infra-model co-design: the agent system, the training infrastructure, and the models are not separate concerns — they're a single feedback loop where each layer improves the others.
+
+---
+
+## What Each Layer Does
+
+### Operator (training infrastructure)
+
+- **Auto-parallelism** — matches model architecture (hidden dim, layers, heads) to GPU hardware (memory, bandwidth, FP8 support) at admission time. Hierarchical search over TP/PP/CP/FSDP mirroring the NVLink→IB interconnect hierarchy.
+- **Prolog** — pre-flight GPU health check (hardware diagnostics, kernel validation, interconnect bandwidth) before committing GPU-hours.
+- **Sidecar monitoring** — per-pod DCGM metrics and straggler detection built into the StatefulSet template. No cluster-wide webhook needed.
+- **Checkpoint management** — periodic save, validation, retention, and protection on deletion.
+- **Kueue integration** — suspend-based admission control with child resource isolation.
+
+### Agents (development and operations)
+
+- **8 specialized roles** — model-builder, model-trainer, infra, ops, sre, cicd, model-eval, model-install. Each has a SKILL.md with domain instructions and scoped file ownership (WatchPaths).
+- **Git-based coordination** — AGENCY.md is the task board. No message bus, no custom CRDs for orchestration.
+- **Harness engineering pipeline** — run → observe (structured traces) → eval (7 deterministic scorers + LLM-as-judge) → iterate (failure pattern extraction → SKILL.md improvement proposals). The harness tightens automatically over time.
+- **Model-install agent** — converts checkpoints to serving format, pushes to registry, generates vLLM deployment patches and semantic router config updates. Deployment artifacts go to a branch for human/GitOps review — agents never `kubectl apply` to production.
 
 ---
 
@@ -64,7 +91,7 @@ This is not a scheduler (that's Kueue/Volcano), not a training framework (that's
 | [Design](docs/design.md) | Workflow (admission → prolog → workers → monitoring → deletion), auto-parallelism advisor (hierarchical search, pruning, caching), webhook efficiency |
 | [Kueue Integration](docs/kueue.md) | Suspend-based admission, child resource isolation, standalone mode |
 | [Comparison & Limitations](docs/comparison.md) | vs. Kubeflow, Kueue, Volcano, NeMo, TAS; known limitations; production gaps |
-| [Multi-Agent System](agents/README.md) | 8 specialized agents, interaction diagrams, coordination protocol, model-install agent, run→observe→eval→iterate harness engineering pipeline |
+| [Agent System](agents/README.md) | 8 specialized agents, interaction diagrams, coordination protocol, model-install agent, run→observe→eval→iterate harness engineering pipeline |
 
 ---
 

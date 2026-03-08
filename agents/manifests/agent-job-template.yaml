@@ -1,0 +1,74 @@
+# Template for running a one-shot agent Job.
+# Replace AGENT_ROLE with the desired role: model-builder, model-trainer,
+# infra, ops, sre, cicd.
+#
+# Usage:
+#   export ROLE=model-builder
+#   sed "s/AGENT_ROLE_PLACEHOLDER/$ROLE/g" agent-job-template.yaml | kubectl apply -f -
+#
+# Or use the Makefile: make agent-run ROLE=model-builder
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: agent-AGENT_ROLE_PLACEHOLDER-
+  namespace: trainjob-agents
+  labels:
+    app: trainjob-agent
+    agent-role: AGENT_ROLE_PLACEHOLDER
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: trainjob-agent
+        agent-role: AGENT_ROLE_PLACEHOLDER
+    spec:
+      restartPolicy: Never
+      serviceAccountName: trainjob-agent
+      containers:
+        - name: agent
+          image: ghcr.io/rootfs/trainjob-agent:latest
+          env:
+            - name: AGENT_ROLE
+              value: AGENT_ROLE_PLACEHOLDER
+            - name: AGENT_REPO_URL
+              valueFrom:
+                secretKeyRef:
+                  name: agent-git-credentials
+                  key: repo-url
+            - name: VLLM_ENDPOINT
+              value: "http://vllm.trainjob-agents.svc:8000/v1"
+            - name: VLLM_MODEL
+              value: "Qwen/Qwen2.5-Coder-32B-Instruct"
+            - name: AGENT_MAX_TURNS
+              value: "20"
+            - name: AGENT_WORKDIR
+              value: "/workspace"
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+            - name: git-ssh
+              mountPath: /home/agent/.ssh
+              readOnly: true
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+      volumes:
+        - name: workspace
+          emptyDir: {}
+        - name: git-ssh
+          secret:
+            secretName: agent-git-credentials
+            items:
+              - key: ssh-key
+                path: id_ed25519
+                mode: 0400
+              - key: known-hosts
+                path: known_hosts
+                mode: 0644
+            optional: true

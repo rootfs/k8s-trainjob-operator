@@ -1,0 +1,114 @@
+# Periodic agent runs for SRE and CI/CD roles.
+# SRE agent runs every 30 minutes to check for reliability improvements.
+# CICD agent runs every 6 hours to check for build/test improvements.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: agent-sre-periodic
+  namespace: trainjob-agents
+  labels:
+    app: trainjob-agent
+    agent-role: sre
+spec:
+  schedule: "*/30 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            app: trainjob-agent
+            agent-role: sre
+        spec:
+          restartPolicy: Never
+          serviceAccountName: trainjob-agent
+          containers:
+            - name: agent
+              image: ghcr.io/rootfs/trainjob-agent:latest
+              env:
+                - name: AGENT_ROLE
+                  value: sre
+                - name: AGENT_REPO_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: agent-git-credentials
+                      key: repo-url
+                - name: VLLM_ENDPOINT
+                  value: "http://vllm.trainjob-agents.svc:8000/v1"
+                - name: VLLM_MODEL
+                  value: "Qwen/Qwen2.5-Coder-32B-Instruct"
+                - name: AGENT_MAX_TURNS
+                  value: "15"
+              volumeMounts:
+                - name: workspace
+                  mountPath: /workspace
+              resources:
+                requests:
+                  cpu: "500m"
+                  memory: "512Mi"
+                limits:
+                  cpu: "2"
+                  memory: "2Gi"
+          volumes:
+            - name: workspace
+              emptyDir: {}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: agent-cicd-periodic
+  namespace: trainjob-agents
+  labels:
+    app: trainjob-agent
+    agent-role: cicd
+spec:
+  schedule: "0 */6 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            app: trainjob-agent
+            agent-role: cicd
+        spec:
+          restartPolicy: Never
+          serviceAccountName: trainjob-agent
+          containers:
+            - name: agent
+              image: ghcr.io/rootfs/trainjob-agent:latest
+              env:
+                - name: AGENT_ROLE
+                  value: cicd
+                - name: AGENT_REPO_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: agent-git-credentials
+                      key: repo-url
+                - name: VLLM_ENDPOINT
+                  value: "http://vllm.trainjob-agents.svc:8000/v1"
+                - name: VLLM_MODEL
+                  value: "Qwen/Qwen2.5-Coder-32B-Instruct"
+                - name: AGENT_MAX_TURNS
+                  value: "15"
+              volumeMounts:
+                - name: workspace
+                  mountPath: /workspace
+              resources:
+                requests:
+                  cpu: "500m"
+                  memory: "512Mi"
+                limits:
+                  cpu: "2"
+                  memory: "2Gi"
+          volumes:
+            - name: workspace
+              emptyDir: {}

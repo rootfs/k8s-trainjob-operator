@@ -67,6 +67,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	// ── Register the ModelPipeline reconciler ──
+	if err := (&controller.ModelPipelineReconciler{
+		Client:   mgr.GetClient(),
+		Recorder: mgr.GetEventRecorderFor("modelpipeline-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		logger.Error(err, "unable to create controller", "controller", "ModelPipeline")
+		os.Exit(1)
+	}
+
 	// ── Register webhooks ──
 
 	// Validating webhook for TrainJob

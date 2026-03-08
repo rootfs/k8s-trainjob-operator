@@ -491,4 +491,330 @@ type TrainJobList struct {
 
 func init() {
 	SchemeBuilder.Register(&TrainJob{}, &TrainJobList{})
+	SchemeBuilder.Register(&ModelPipeline{}, &ModelPipelineList{})
+}
+
+// ════════════════════════════════════════════════════════════════════════
+//  ModelPipeline — continuous model lifecycle management
+// ════════════════════════════════════════════════════════════════════════
+
+//+kubebuilder:object:root=true
+//+kubebuilder:subresource:status
+//+kubebuilder:printcolumn:name="Model",type="string",JSONPath=".spec.template.spec.model"
+//+kubebuilder:printcolumn:name="Version",type="integer",JSONPath=".status.currentVersion"
+//+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
+//+kubebuilder:printcolumn:name="Active",type="string",JSONPath=".status.activeTrainJob"
+//+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
+
+// ModelPipeline manages the continuous lifecycle of a model: it watches production
+// metrics, decides when to retrain or fine-tune, creates TrainJobs, gates deployments
+// on eval results, and manages model versioning with canary rollout and rollback.
+type ModelPipeline struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   ModelPipelineSpec   `json:"spec,omitempty"`
+	Status ModelPipelineStatus `json:"status,omitempty"`
+}
+
+//+kubebuilder:object:root=true
+
+// ModelPipelineList contains a list of ModelPipelines.
+type ModelPipelineList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []ModelPipeline `json:"items"`
+}
+
+// ModelPipelineSpec defines the desired state of a model's continuous training pipeline.
+type ModelPipelineSpec struct {
+	// Template is the TrainJob spec used as a base when creating new training runs.
+	// The pipeline controller stamps out TrainJob CRs from this template, adding
+	// version-specific labels and adjusting checkpoint paths per run.
+	Template TrainJobTemplate `json:"template"`
+
+	// Triggers define when a new training run should be created.
+	// Multiple triggers are OR'd: any one firing starts a new run (if none is in progress).
+	// +optional
+	Triggers []PipelineTrigger `json:"triggers,omitempty"`
+
+	// Versioning controls how model versions are managed.
+	// +optional
+	Versioning VersioningPolicy `json:"versioning,omitempty"`
+
+	// Serving describes the target serving infrastructure. Used for monitoring
+	// production metrics and for generating deployment artifacts.
+	// +optional
+	Serving *ServingTarget `json:"serving,omitempty"`
+
+	// FineTuneDefaults provide overrides applied when a trigger fires with action FineTune
+	// instead of Retrain. This allows shorter runs with lower LR from an existing checkpoint.
+	// +optional
+	FineTuneDefaults *FineTuneOverrides `json:"fineTuneDefaults,omitempty"`
+
+	// Paused stops the pipeline from creating new TrainJobs. Existing jobs continue.
+	// +optional
+	Paused bool `json:"paused,omitempty"`
+}
+
+// TrainJobTemplate wraps a TrainJobSpec with optional metadata overrides.
+type TrainJobTemplate struct {
+	// Metadata applied to each created TrainJob (labels, annotations).
+	// +optional
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	// Spec is the TrainJobSpec used as the base for each training run.
+	Spec TrainJobSpec `json:"spec"`
+}
+
+// PipelineTrigger defines a condition that causes the pipeline to create a new TrainJob.
+type PipelineTrigger struct {
+	// Name is a human-readable identifier for this trigger.
+	Name string `json:"name"`
+
+	// Type is one of: MetricThreshold, Schedule, Manual.
+	Type TriggerType `json:"type"`
+
+	// Action is what to do when the trigger fires: Retrain or FineTune.
+	// Retrain creates a fresh TrainJob from the template. FineTune creates one
+	// that starts from the latest checkpoint with adjusted hyperparameters.
+	// +optional
+	Action PipelineAction `json:"action,omitempty"`
+
+	// MetricThreshold trigger config (required when type == MetricThreshold).
+	// +optional
+	MetricThreshold *MetricThresholdTrigger `json:"metricThreshold,omitempty"`
+
+	// Schedule trigger config (required when type == Schedule).
+	// +optional
+	Schedule *ScheduleTrigger `json:"schedule,omitempty"`
+}
+
+type TriggerType string
+
+const (
+	TriggerMetricThreshold TriggerType = "MetricThreshold"
+	TriggerSchedule        TriggerType = "Schedule"
+	TriggerManual          TriggerType = "Manual"
+)
+
+type PipelineAction string
+
+const (
+	ActionRetrain  PipelineAction = "Retrain"
+	ActionFineTune PipelineAction = "FineTune"
+)
+
+// MetricThresholdTrigger fires when a metric on the currently serving TrainJob
+// crosses a threshold.
+type MetricThresholdTrigger struct {
+	// Metric is the dot-path into TrainJob status (e.g., "serving.routingAccuracy",
+	// "serving.embeddingDriftKL", "eval.benchmarks[0].value").
+	Metric string `json:"metric"`
+
+	// Operator is one of: LessThan, GreaterThan.
+	Operator ThresholdOperator `json:"operator"`
+
+	// Value is the threshold.
+	Value float64 `json:"value"`
+
+	// CooldownMinutes prevents the trigger from firing again within this window
+	// after it last fired. Prevents retrain storms.
+	// +optional
+	CooldownMinutes *int32 `json:"cooldownMinutes,omitempty"`
+}
+
+type ThresholdOperator string
+
+const (
+	OperatorLessThan    ThresholdOperator = "LessThan"
+	OperatorGreaterThan ThresholdOperator = "GreaterThan"
+)
+
+// ScheduleTrigger fires on a cron schedule.
+type ScheduleTrigger struct {
+	// Cron is a standard cron expression (e.g., "0 2 * * 0" for Sunday 2am).
+	Cron string `json:"cron"`
+}
+
+// VersioningPolicy controls how model versions are managed.
+type VersioningPolicy struct {
+	// MaxConcurrent is the maximum number of TrainJobs running simultaneously.
+	// Defaults to 1. Set to 0 for unlimited.
+	// +optional
+	MaxConcurrent *int32 `json:"maxConcurrent,omitempty"`
+
+	// RetainVersions is the number of completed TrainJob versions to keep before
+	// garbage collecting the oldest. Defaults to 5.
+	// +optional
+	RetainVersions *int32 `json:"retainVersions,omitempty"`
+
+	// AutoPromote controls whether a model that passes eval is automatically
+	// sent to the model-install pipeline. If false, promotion requires manual
+	// annotation. Defaults to false.
+	// +optional
+	AutoPromote bool `json:"autoPromote,omitempty"`
+
+	// RollbackOnRegression automatically reverts to the previous model version
+	// if the new model's canary metrics are worse. Defaults to true.
+	// +optional
+	RollbackOnRegression *bool `json:"rollbackOnRegression,omitempty"`
+}
+
+// ServingTarget describes the production inference setup the pipeline monitors
+// and deploys to.
+type ServingTarget struct {
+	// VLLMDeployment is the name of the vLLM Deployment to monitor/update.
+	VLLMDeployment string `json:"vllmDeployment,omitempty"`
+
+	// VLLMNamespace is the namespace of the vLLM Deployment.
+	VLLMNamespace string `json:"vllmNamespace,omitempty"`
+
+	// SemanticRouterConfigMap is the ConfigMap name for the routing table.
+	SemanticRouterConfigMap string `json:"semanticRouterConfigMap,omitempty"`
+
+	// CanaryPercent is the initial traffic percentage for the new model during rollout.
+	// 0 means full rollout immediately (no canary). Defaults to 0.
+	// +optional
+	CanaryPercent *int32 `json:"canaryPercent,omitempty"`
+
+	// CanaryDurationMinutes is how long the canary runs before auto-promoting
+	// (if metrics hold) or rolling back (if they degrade). Defaults to 60.
+	// +optional
+	CanaryDurationMinutes *int32 `json:"canaryDurationMinutes,omitempty"`
+
+	// MetricsEndpoint is the Prometheus endpoint for serving metrics.
+	// If empty, the controller reads from TrainJob status.serving (which must
+	// be populated by an external scraper or the serving observer).
+	// +optional
+	MetricsEndpoint string `json:"metricsEndpoint,omitempty"`
+}
+
+// FineTuneOverrides are applied on top of the template spec when action is FineTune.
+type FineTuneOverrides struct {
+	// MaxSteps limits the fine-tune run to this many steps (via MaxRuntime or
+	// injected as an env var). Defaults to 5000.
+	// +optional
+	MaxSteps *int64 `json:"maxSteps,omitempty"`
+
+	// LearningRateScale multiplies the base learning rate for fine-tuning.
+	// Typically 0.1 to 0.01. Defaults to 0.1.
+	// +optional
+	LearningRateScale *float64 `json:"learningRateScale,omitempty"`
+
+	// AdditionalEnv are extra env vars injected into the fine-tune TrainJob.
+	// +optional
+	AdditionalEnv []EnvVar `json:"additionalEnv,omitempty"`
+}
+
+// ════════════════════════════════════════════════════════════════════════
+//  ModelPipeline Status
+// ════════════════════════════════════════════════════════════════════════
+
+// ModelPipelineStatus tracks the pipeline's observed state.
+type ModelPipelineStatus struct {
+	// Phase is the pipeline's high-level state.
+	Phase PipelinePhase `json:"phase,omitempty"`
+
+	// Conditions follow Kubernetes conventions.
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// CurrentVersion is the monotonically increasing model version counter.
+	CurrentVersion int32 `json:"currentVersion,omitempty"`
+
+	// ActiveTrainJob is the name of the currently running TrainJob (empty if idle).
+	ActiveTrainJob string `json:"activeTrainJob,omitempty"`
+
+	// ActiveVersion is the version number of the currently running TrainJob.
+	ActiveVersion int32 `json:"activeVersion,omitempty"`
+
+	// ServingVersion is the version currently deployed in production.
+	ServingVersion int32 `json:"servingVersion,omitempty"`
+
+	// ServingTrainJob is the name of the TrainJob whose model is currently serving.
+	ServingTrainJob string `json:"servingTrainJob,omitempty"`
+
+	// VersionHistory tracks completed training runs.
+	// +optional
+	VersionHistory []ModelVersion `json:"versionHistory,omitempty"`
+
+	// LastTrigger records which trigger caused the most recent training run.
+	// +optional
+	LastTrigger string `json:"lastTrigger,omitempty"`
+
+	// LastTriggerTime is when the last trigger fired.
+	// +optional
+	LastTriggerTime *metav1.Time `json:"lastTriggerTime,omitempty"`
+
+	// CanaryStatus tracks an in-progress canary deployment.
+	// +optional
+	CanaryStatus *CanaryStatus `json:"canaryStatus,omitempty"`
+}
+
+type PipelinePhase string
+
+const (
+	PipelineIdle       PipelinePhase = "Idle"
+	PipelineTraining   PipelinePhase = "Training"
+	PipelineEvaluating PipelinePhase = "Evaluating"
+	PipelineDeploying  PipelinePhase = "Deploying"
+	PipelineCanary     PipelinePhase = "Canary"
+	PipelineRollback   PipelinePhase = "Rollback"
+	PipelinePaused     PipelinePhase = "Paused"
+)
+
+// ModelVersion records the outcome of a single training run.
+type ModelVersion struct {
+	// Version is the sequential version number.
+	Version int32 `json:"version"`
+
+	// TrainJobName is the name of the TrainJob CR.
+	TrainJobName string `json:"trainJobName"`
+
+	// Action is what type of run this was (Retrain or FineTune).
+	Action PipelineAction `json:"action,omitempty"`
+
+	// Trigger is the name of the trigger that caused this run.
+	Trigger string `json:"trigger,omitempty"`
+
+	// Phase is the final phase of the TrainJob (Succeeded, Failed).
+	Phase TrainJobPhase `json:"phase,omitempty"`
+
+	// EvalVerdict is the eval result ("promote", "rollback", "retrain").
+	// +optional
+	EvalVerdict string `json:"evalVerdict,omitempty"`
+
+	// Promoted indicates whether this version was deployed to production.
+	Promoted bool `json:"promoted,omitempty"`
+
+	// StartedAt is when the training started.
+	// +optional
+	StartedAt *metav1.Time `json:"startedAt,omitempty"`
+
+	// CompletedAt is when the training completed.
+	// +optional
+	CompletedAt *metav1.Time `json:"completedAt,omitempty"`
+
+	// CheckpointPath is the final checkpoint path.
+	// +optional
+	CheckpointPath string `json:"checkpointPath,omitempty"`
+}
+
+// CanaryStatus tracks an in-progress canary deployment.
+type CanaryStatus struct {
+	// Version being canaried.
+	Version int32 `json:"version"`
+
+	// StartedAt is when the canary started.
+	StartedAt *metav1.Time `json:"startedAt,omitempty"`
+
+	// TrafficPercent is the current traffic percentage going to the canary.
+	TrafficPercent int32 `json:"trafficPercent,omitempty"`
+
+	// BaselineMetricValue is the primary metric value of the old model.
+	BaselineMetricValue *float64 `json:"baselineMetricValue,omitempty"`
+
+	// CanaryMetricValue is the primary metric value of the canary model.
+	CanaryMetricValue *float64 `json:"canaryMetricValue,omitempty"`
 }

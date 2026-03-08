@@ -474,3 +474,303 @@ func (in *CheckpointMetrics) DeepCopy() *CheckpointMetrics {
 	in.DeepCopyInto(out)
 	return out
 }
+
+// ════════════════════════════════════════════════════════════════════════
+//  ModelPipeline DeepCopy
+// ════════════════════════════════════════════════════════════════════════
+
+func (in *ModelPipeline) DeepCopyInto(out *ModelPipeline) {
+	*out = *in
+	out.TypeMeta = in.TypeMeta
+	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
+	in.Spec.DeepCopyInto(&out.Spec)
+	in.Status.DeepCopyInto(&out.Status)
+}
+
+func (in *ModelPipeline) DeepCopy() *ModelPipeline {
+	if in == nil {
+		return nil
+	}
+	out := new(ModelPipeline)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *ModelPipeline) DeepCopyObject() runtime.Object {
+	if c := in.DeepCopy(); c != nil {
+		return c
+	}
+	return nil
+}
+
+func (in *ModelPipelineList) DeepCopyInto(out *ModelPipelineList) {
+	*out = *in
+	out.TypeMeta = in.TypeMeta
+	in.ListMeta.DeepCopyInto(&out.ListMeta)
+	if in.Items != nil {
+		in, out := &in.Items, &out.Items
+		*out = make([]ModelPipeline, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
+}
+
+func (in *ModelPipelineList) DeepCopy() *ModelPipelineList {
+	if in == nil {
+		return nil
+	}
+	out := new(ModelPipelineList)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *ModelPipelineList) DeepCopyObject() runtime.Object {
+	if c := in.DeepCopy(); c != nil {
+		return c
+	}
+	return nil
+}
+
+func (in *ModelPipelineSpec) DeepCopyInto(out *ModelPipelineSpec) {
+	*out = *in
+	in.Template.DeepCopyInto(&out.Template)
+	if in.Triggers != nil {
+		in, out := &in.Triggers, &out.Triggers
+		*out = make([]PipelineTrigger, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
+	in.Versioning.DeepCopyInto(&out.Versioning)
+	if in.Serving != nil {
+		in, out := &in.Serving, &out.Serving
+		*out = new(ServingTarget)
+		(*in).DeepCopyInto(*out)
+	}
+	if in.FineTuneDefaults != nil {
+		in, out := &in.FineTuneDefaults, &out.FineTuneDefaults
+		*out = new(FineTuneOverrides)
+		(*in).DeepCopyInto(*out)
+	}
+}
+
+func (in *ModelPipelineSpec) DeepCopy() *ModelPipelineSpec {
+	if in == nil {
+		return nil
+	}
+	out := new(ModelPipelineSpec)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *TrainJobTemplate) DeepCopyInto(out *TrainJobTemplate) {
+	*out = *in
+	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
+	in.Spec.DeepCopyInto(&out.Spec)
+}
+
+func (in *TrainJobTemplate) DeepCopy() *TrainJobTemplate {
+	if in == nil {
+		return nil
+	}
+	out := new(TrainJobTemplate)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *PipelineTrigger) DeepCopyInto(out *PipelineTrigger) {
+	*out = *in
+	if in.MetricThreshold != nil {
+		in, out := &in.MetricThreshold, &out.MetricThreshold
+		*out = new(MetricThresholdTrigger)
+		(*in).DeepCopyInto(*out)
+	}
+	if in.Schedule != nil {
+		in, out := &in.Schedule, &out.Schedule
+		*out = new(ScheduleTrigger)
+		**out = **in
+	}
+}
+
+func (in *PipelineTrigger) DeepCopy() *PipelineTrigger {
+	if in == nil {
+		return nil
+	}
+	out := new(PipelineTrigger)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *MetricThresholdTrigger) DeepCopyInto(out *MetricThresholdTrigger) {
+	*out = *in
+	if in.CooldownMinutes != nil {
+		in, out := &in.CooldownMinutes, &out.CooldownMinutes
+		*out = new(int32)
+		**out = **in
+	}
+}
+
+func (in *MetricThresholdTrigger) DeepCopy() *MetricThresholdTrigger {
+	if in == nil {
+		return nil
+	}
+	out := new(MetricThresholdTrigger)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *VersioningPolicy) DeepCopyInto(out *VersioningPolicy) {
+	*out = *in
+	if in.MaxConcurrent != nil {
+		in, out := &in.MaxConcurrent, &out.MaxConcurrent
+		*out = new(int32)
+		**out = **in
+	}
+	if in.RetainVersions != nil {
+		in, out := &in.RetainVersions, &out.RetainVersions
+		*out = new(int32)
+		**out = **in
+	}
+	if in.RollbackOnRegression != nil {
+		in, out := &in.RollbackOnRegression, &out.RollbackOnRegression
+		*out = new(bool)
+		**out = **in
+	}
+}
+
+func (in *VersioningPolicy) DeepCopy() *VersioningPolicy {
+	if in == nil {
+		return nil
+	}
+	out := new(VersioningPolicy)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *ServingTarget) DeepCopyInto(out *ServingTarget) {
+	*out = *in
+	if in.CanaryPercent != nil {
+		in, out := &in.CanaryPercent, &out.CanaryPercent
+		*out = new(int32)
+		**out = **in
+	}
+	if in.CanaryDurationMinutes != nil {
+		in, out := &in.CanaryDurationMinutes, &out.CanaryDurationMinutes
+		*out = new(int32)
+		**out = **in
+	}
+}
+
+func (in *ServingTarget) DeepCopy() *ServingTarget {
+	if in == nil {
+		return nil
+	}
+	out := new(ServingTarget)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *FineTuneOverrides) DeepCopyInto(out *FineTuneOverrides) {
+	*out = *in
+	if in.MaxSteps != nil {
+		in, out := &in.MaxSteps, &out.MaxSteps
+		*out = new(int64)
+		**out = **in
+	}
+	if in.LearningRateScale != nil {
+		in, out := &in.LearningRateScale, &out.LearningRateScale
+		*out = new(float64)
+		**out = **in
+	}
+	if in.AdditionalEnv != nil {
+		in, out := &in.AdditionalEnv, &out.AdditionalEnv
+		*out = make([]EnvVar, len(*in))
+		copy(*out, *in)
+	}
+}
+
+func (in *FineTuneOverrides) DeepCopy() *FineTuneOverrides {
+	if in == nil {
+		return nil
+	}
+	out := new(FineTuneOverrides)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *ModelPipelineStatus) DeepCopyInto(out *ModelPipelineStatus) {
+	*out = *in
+	if in.Conditions != nil {
+		in, out := &in.Conditions, &out.Conditions
+		*out = make([]metav1.Condition, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
+	if in.VersionHistory != nil {
+		in, out := &in.VersionHistory, &out.VersionHistory
+		*out = make([]ModelVersion, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
+	if in.LastTriggerTime != nil {
+		in, out := &in.LastTriggerTime, &out.LastTriggerTime
+		*out = (*in).DeepCopy()
+	}
+	if in.CanaryStatus != nil {
+		in, out := &in.CanaryStatus, &out.CanaryStatus
+		*out = new(CanaryStatus)
+		(*in).DeepCopyInto(*out)
+	}
+}
+
+func (in *ModelPipelineStatus) DeepCopy() *ModelPipelineStatus {
+	if in == nil {
+		return nil
+	}
+	out := new(ModelPipelineStatus)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *ModelVersion) DeepCopyInto(out *ModelVersion) {
+	*out = *in
+	if in.StartedAt != nil {
+		in, out := &in.StartedAt, &out.StartedAt
+		*out = (*in).DeepCopy()
+	}
+	if in.CompletedAt != nil {
+		in, out := &in.CompletedAt, &out.CompletedAt
+		*out = (*in).DeepCopy()
+	}
+}
+
+func (in *ModelVersion) DeepCopy() *ModelVersion {
+	if in == nil {
+		return nil
+	}
+	out := new(ModelVersion)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *CanaryStatus) DeepCopyInto(out *CanaryStatus) {
+	*out = *in
+	if in.StartedAt != nil {
+		in, out := &in.StartedAt, &out.StartedAt
+		*out = (*in).DeepCopy()
+	}
+	out.BaselineMetricValue = copyFloat64Ptr(in.BaselineMetricValue)
+	out.CanaryMetricValue = copyFloat64Ptr(in.CanaryMetricValue)
+}
+
+func (in *CanaryStatus) DeepCopy() *CanaryStatus {
+	if in == nil {
+		return nil
+	}
+	out := new(CanaryStatus)
+	in.DeepCopyInto(out)
+	return out
+}

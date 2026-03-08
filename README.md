@@ -4,7 +4,7 @@ A Kubernetes operator for distributed GPU training, built around the idea that *
 
 The project has two parts:
 
-1. **The operator** — a K8s controller that manages the full training lifecycle: admission-time validation, auto-parallelism configuration, pre-training GPU health checks, worker orchestration, checkpoint management, and runtime monitoring. Built with [controller-runtime](https://github.com/kubernetes-sigs/controller-runtime).
+1. **The operator** — two K8s controllers: `TrainJob` manages a single training run (admission → prolog → train → eval → succeed), and `ModelPipeline` manages the continuous lifecycle across versions (watch production metrics → trigger retrain/fine-tune → gate on eval → canary deploy → rollback if needed). Built with [controller-runtime](https://github.com/kubernetes-sigs/controller-runtime).
 
 2. **The agent system** — 8 specialized AI agents that develop, evaluate, and operate the operator itself. They coordinate through git, run on vLLM (the same inference engine the trained models deploy to), and include a harness engineering pipeline that automatically tightens agent instructions based on observed failures.
 
@@ -87,12 +87,13 @@ This is agent-infra-model co-design: the agent system, the training infrastructu
 
 | Document | What it covers |
 |---|---|
-| [CRD Reference](docs/crd.md) | TrainJob spec, ModelArchSpec, CheckpointSpec, MetricsConfig, EvalConfig, status fields, YAML examples |
+| [CRD Reference](docs/crd.md) | TrainJob spec, ModelPipeline spec, status fields, YAML examples |
 | [Design](docs/design.md) | Workflow (admission → prolog → workers → monitoring → eval → deletion), auto-parallelism advisor, webhook efficiency |
-| [Observability](docs/observability.md) | Four-stage metrics pipeline (training → eval → deployment → serving), feedback loops, metrics-collector sidecar, Prometheus export, agent-consumable status fields |
+| [ModelPipeline](docs/pipeline.md) | Continuous model lifecycle: triggers (metric threshold, schedule, manual), retrain vs fine-tune, versioning, canary deployment, automatic rollback |
+| [Observability](docs/observability.md) | Four-stage metrics pipeline (training → eval → deployment → serving), feedback loops, agent-consumable status fields |
 | [Kueue Integration](docs/kueue.md) | Suspend-based admission, child resource isolation, standalone mode |
 | [Comparison & Limitations](docs/comparison.md) | vs. Kubeflow, Kueue, Volcano, NeMo, TAS; known limitations; production gaps |
-| [Agent System](agents/README.md) | 8 specialized agents, interaction diagrams, coordination protocol, model-install agent, run→observe→eval→iterate harness engineering pipeline |
+| [Agent System](agents/README.md) | 8 specialized agents, interaction diagrams, coordination protocol, run→observe→eval→iterate harness engineering pipeline |
 
 ---
 
@@ -130,15 +131,16 @@ Run `make help` to see all targets.
 
 ```
 api/v1alpha1/
-  types.go                       CRD types (TrainJobSpec, TrainJobStatus, phases)
+  types.go                       CRD types (TrainJob, ModelPipeline, metrics, triggers)
   groupversion_info.go           GroupVersion, SchemeBuilder, AddToScheme
   zz_generated.deepcopy.go       DeepCopy implementations for all CRD types
 
 cmd/
-  main.go                        Entry point: manager, controller, webhooks, health checks
+  main.go                        Entry point: manager, controllers, webhooks, health checks
 
 internal/controller/
-  trainjob_controller.go         Reconciler with state-machine phase transitions
+  trainjob_controller.go         TrainJob reconciler (single-run state machine)
+  pipeline_controller.go         ModelPipeline reconciler (continuous lifecycle)
   trainjob_controller_test.go    envtest-based integration tests
   suite_test.go                  Envtest suite setup (k8sClient, manager bootstrap)
   prolog.go                      Prolog Job builder (3-phase GPU health check)
@@ -156,6 +158,7 @@ internal/webhook/
 docs/
   crd.md                         CRD reference and examples
   design.md                      Workflow, auto-parallelism, webhook efficiency
+  pipeline.md                    ModelPipeline: triggers, versioning, canary, rollback
   observability.md               Four-stage metrics pipeline and feedback loops
   kueue.md                       Kueue integration details
   comparison.md                  Framework comparison and limitations

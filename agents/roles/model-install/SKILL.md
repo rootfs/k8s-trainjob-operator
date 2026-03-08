@@ -151,6 +151,42 @@ with open(f"{OUTPUT_PATH}/install-metadata.json", "w") as f:
 print(f"Conversion complete: {OUTPUT_PATH}")
 ```
 
+## Deployment Metrics: status.deployment
+
+After conversion and loading, the install pipeline writes deployment metrics to
+`status.deployment` on the TrainJob CR. This lets agents (and humans) verify the
+model is serving-ready before promoting it.
+
+```yaml
+status:
+  deployment:
+    conversionTimeSec: 342.5
+    outputSizeGB: 14.2
+    maxAbsError: 0.00012
+    outputFormat: safetensors
+    loadTimeSec: 28.4
+    servingMemoryGB: 32.1
+    timeToFirstTokenMs: 45.2
+    smokeTestPassed: true
+    testedServingTP: 4
+    vllmVersion: "0.8.2"
+    deployedAt: "2026-03-08T16:00:00Z"
+```
+
+The conversion Job writes a metadata file to `/var/run/install/deploy-metrics.json`
+with these fields. A post-conversion script or the reconciler patches `status.deployment`.
+
+Key decisions agents make from these metrics:
+- **maxAbsError > threshold** → quantization too aggressive, rerun with higher precision
+- **smokeTestPassed == false** → model incompatible with serving engine, investigate
+- **loadTimeSec too high** → model may be too large for target TP degree
+- **servingMemoryGB close to GPU limit** → may need different quantization or TP
+
+## Prerequisites
+
+The model-install agent only proceeds when `status.eval.verdict == "promote"`.
+If eval hasn't run or the verdict is "rollback" or "retrain", install is skipped.
+
 ## Constraints
 
 - The conversion Job must use GPU to load the model (especially for quantization).
@@ -160,12 +196,15 @@ print(f"Conversion complete: {OUTPUT_PATH}")
   `kubectl apply` against the serving cluster. Deployment is a human/GitOps decision.
 - Registry credentials come from K8s Secrets, never hardcoded.
 - The conversion output path should be deterministic: `<registry>/<model>:<trainjob-name>-step-<N>`.
+- Deployment metrics must be written to `status.deployment` so downstream agents
+  (SRE, ops) can verify the model loaded correctly before it takes traffic.
 - After changes, run `go build ./...` and `go vet ./...`.
 
 ## Files to Read First
 
 1. `internal/controller/checkpoint.go` — checkpoint validation Job builder (model for conversion Job structure)
-2. `api/v1alpha1/types.go` — where to add InstallSpec
-3. `internal/controller/trainjob_controller.go` — where conversion phase fits in the state machine
-4. `agents/roles/model-eval/SKILL.md` — the eval agent runs before install; understand the handoff
-5. `agents/manifests/vllm-deployment.yaml` — the vLLM deployment the serving config targets
+2. `internal/controller/eval.go` — eval Job builder (install runs after eval)
+3. `api/v1alpha1/types.go` — DeploymentMetrics in status, EvalConfig prerequisites
+4. `internal/controller/trainjob_controller.go` — where conversion phase fits in the state machine
+5. `agents/roles/model-eval/SKILL.md` — the eval agent runs before install; understand the handoff
+6. `agents/manifests/vllm-deployment.yaml` — the vLLM deployment the serving config targets

@@ -114,6 +114,8 @@ func (r *TrainJobReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return r.handleRunning(ctx, &tj)
 	case aiv1.PhaseCheckpointing:
 		return r.handleCheckpointing(ctx, &tj)
+	case aiv1.PhaseEvaluating:
+		return r.handleEvaluating(ctx, &tj)
 	case aiv1.PhaseSucceeded, aiv1.PhaseFailed:
 		return ctrl.Result{}, nil // Terminal states
 	default:
@@ -296,6 +298,11 @@ func (r *TrainJobReconciler) handleRunning(ctx context.Context, tj *aiv1.TrainJo
 		tj.Status.CompletionTime = &now
 		r.Recorder.Event(tj, corev1.EventTypeNormal, "TrainingCompleted",
 			fmt.Sprintf("All %d workers completed successfully", tj.Spec.NumNodes))
+
+		if tj.Spec.EvalConfig != nil {
+			return r.transition(ctx, tj, aiv1.PhaseEvaluating, "TrainingCompleted",
+				"All workers completed, starting post-training evaluation")
+		}
 		return r.transition(ctx, tj, aiv1.PhaseSucceeded, "TrainingCompleted", "All workers completed")
 	}
 
@@ -360,6 +367,53 @@ func (r *TrainJobReconciler) handleCheckpointing(ctx context.Context, tj *aiv1.T
 	}
 
 	return ctrl.Result{RequeueAfter: checkpointPollInterval}, nil
+}
+
+// handleEvaluating manages the post-training eval job.
+func (r *TrainJobReconciler) handleEvaluating(ctx context.Context, tj *aiv1.TrainJob) (ctrl.Result, error) {
+	evalJob := buildEvalJob(tj)
+	if evalJob == nil {
+		return r.transition(ctx, tj, aiv1.PhaseSucceeded, "NoEvalConfig", "No eval config, skipping evaluation")
+	}
+
+	if err := controllerutil.SetControllerReference(tj, evalJob, r.Scheme()); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.Create(ctx, evalJob); err != nil && !errors.IsAlreadyExists(err) {
+		return ctrl.Result{}, fmt.Errorf("creating eval job: %w", err)
+	}
+
+	var existingJob batchv1.Job
+	key := client.ObjectKey{Namespace: tj.Namespace, Name: evalJobName(tj)}
+	if err := r.Get(ctx, key, &existingJob); err != nil {
+		return ctrl.Result{RequeueAfter: prologPollInterval}, nil
+	}
+
+	for _, cond := range existingJob.Status.Conditions {
+		if cond.Type == batchv1.JobComplete && cond.Status == corev1.ConditionTrue {
+			r.Recorder.Event(tj, corev1.EventTypeNormal, "EvalCompleted",
+				fmt.Sprintf("Post-training evaluation completed at step %d", tj.Status.CurrentStep))
+			return r.transition(ctx, tj, aiv1.PhaseSucceeded, "EvalCompleted",
+				"Evaluation completed successfully")
+		}
+		if cond.Type == batchv1.JobFailed && cond.Status == corev1.ConditionTrue {
+			r.Recorder.Event(tj, corev1.EventTypeWarning, "EvalFailed",
+				fmt.Sprintf("Evaluation failed: %s", cond.Message))
+			// Eval failure doesn't fail the TrainJob — training itself succeeded.
+			// The failure is recorded in a condition for agents to consume.
+			meta.SetStatusCondition(&tj.Status.Conditions, metav1.Condition{
+				Type:               "EvalFailed",
+				Status:             metav1.ConditionTrue,
+				Reason:             "EvalJobFailed",
+				Message:            cond.Message,
+				LastTransitionTime: metav1.Now(),
+			})
+			return r.transition(ctx, tj, aiv1.PhaseSucceeded, "EvalFailed",
+				"Training succeeded but evaluation failed: "+cond.Message)
+		}
+	}
+
+	return ctrl.Result{RequeueAfter: prologPollInterval}, nil
 }
 
 // ════════════════════════════════════════════════════════════════

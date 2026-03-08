@@ -30,7 +30,8 @@
                  │     └─► PrologRunning        │
                  │           ├─► PrologPassed   │
                  │           │     └─► Running  │
-                 │           │          ├─► Succeeded
+                 │           │          ├─► Evaluating ─► Succeeded
+                 │           │          ├─► Succeeded (no eval)
                  │           │          ├─► Checkpointing ─► Running
                  │           │          └─► Failed
                  │           └─► PrologFailed ─► Failed

@@ -108,6 +108,16 @@ func (in *TrainJobSpec) DeepCopyInto(out *TrainJobSpec) {
 		*out = new(bool)
 		**out = **in
 	}
+	if in.MetricsConfig != nil {
+		in, out := &in.MetricsConfig, &out.MetricsConfig
+		*out = new(MetricsConfig)
+		(*in).DeepCopyInto(*out)
+	}
+	if in.EvalConfig != nil {
+		in, out := &in.EvalConfig, &out.EvalConfig
+		*out = new(EvalConfig)
+		(*in).DeepCopyInto(*out)
+	}
 }
 
 func (in *TrainJobSpec) DeepCopy() *TrainJobSpec {
@@ -139,6 +149,31 @@ func (in *TrainJobStatus) DeepCopyInto(out *TrainJobStatus) {
 	if in.LastCheckpointTime != nil {
 		in, out := &in.LastCheckpointTime, &out.LastCheckpointTime
 		*out = (*in).DeepCopy()
+	}
+	if in.Training != nil {
+		in, out := &in.Training, &out.Training
+		*out = new(TrainingMetrics)
+		(*in).DeepCopyInto(*out)
+	}
+	if in.Eval != nil {
+		in, out := &in.Eval, &out.Eval
+		*out = new(EvalMetrics)
+		(*in).DeepCopyInto(*out)
+	}
+	if in.Deployment != nil {
+		in, out := &in.Deployment, &out.Deployment
+		*out = new(DeploymentMetrics)
+		(*in).DeepCopyInto(*out)
+	}
+	if in.Serving != nil {
+		in, out := &in.Serving, &out.Serving
+		*out = new(ServingMetrics)
+		(*in).DeepCopyInto(*out)
+	}
+	if in.CheckpointStatus != nil {
+		in, out := &in.CheckpointStatus, &out.CheckpointStatus
+		*out = new(CheckpointMetrics)
+		(*in).DeepCopyInto(*out)
 	}
 }
 
@@ -189,5 +224,253 @@ func (in *EnvVar) DeepCopy() *EnvVar {
 	}
 	out := new(EnvVar)
 	*out = *in
+	return out
+}
+
+func (in *MetricsConfig) DeepCopyInto(out *MetricsConfig) {
+	*out = *in
+	if in.ScrapeIntervalSeconds != nil {
+		in, out := &in.ScrapeIntervalSeconds, &out.ScrapeIntervalSeconds
+		*out = new(int32)
+		**out = **in
+	}
+	if in.PrometheusPort != nil {
+		in, out := &in.PrometheusPort, &out.PrometheusPort
+		*out = new(int32)
+		**out = **in
+	}
+}
+
+func (in *MetricsConfig) DeepCopy() *MetricsConfig {
+	if in == nil {
+		return nil
+	}
+	out := new(MetricsConfig)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *EvalConfig) DeepCopyInto(out *EvalConfig) {
+	*out = *in
+	if in.Command != nil {
+		in, out := &in.Command, &out.Command
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.Args != nil {
+		in, out := &in.Args, &out.Args
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.GPUsPerNode != nil {
+		in, out := &in.GPUsPerNode, &out.GPUsPerNode
+		*out = new(int32)
+		**out = **in
+	}
+}
+
+func (in *EvalConfig) DeepCopy() *EvalConfig {
+	if in == nil {
+		return nil
+	}
+	out := new(EvalConfig)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func copyFloat64Ptr(p *float64) *float64 {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
+}
+
+func copyBoolPtr(p *bool) *bool {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
+}
+
+func (in *TrainingMetrics) DeepCopyInto(out *TrainingMetrics) {
+	*out = *in
+	out.TrainLoss = copyFloat64Ptr(in.TrainLoss)
+	out.ValLoss = copyFloat64Ptr(in.ValLoss)
+	out.LossDeltaPerK = copyFloat64Ptr(in.LossDeltaPerK)
+	out.GradientNorm = copyFloat64Ptr(in.GradientNorm)
+	out.GradientNormMax = copyFloat64Ptr(in.GradientNormMax)
+	out.ZeroGradientPct = copyFloat64Ptr(in.ZeroGradientPct)
+	out.TokensPerSecond = copyFloat64Ptr(in.TokensPerSecond)
+	out.SamplesPerSecond = copyFloat64Ptr(in.SamplesPerSecond)
+	out.MFU = copyFloat64Ptr(in.MFU)
+	out.CommComputeRatio = copyFloat64Ptr(in.CommComputeRatio)
+	out.StepTimeSec = copyFloat64Ptr(in.StepTimeSec)
+	out.PeakMemoryGB = copyFloat64Ptr(in.PeakMemoryGB)
+	out.AllocatedGB = copyFloat64Ptr(in.AllocatedGB)
+	out.StepTimeP50Sec = copyFloat64Ptr(in.StepTimeP50Sec)
+	out.StepTimeP99Sec = copyFloat64Ptr(in.StepTimeP99Sec)
+	out.StragglerRatio = copyFloat64Ptr(in.StragglerRatio)
+	if in.LastUpdated != nil {
+		in, out := &in.LastUpdated, &out.LastUpdated
+		*out = (*in).DeepCopy()
+	}
+}
+
+func (in *TrainingMetrics) DeepCopy() *TrainingMetrics {
+	if in == nil {
+		return nil
+	}
+	out := new(TrainingMetrics)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *BenchmarkResult) DeepCopyInto(out *BenchmarkResult) {
+	*out = *in
+	out.PreviousValue = copyFloat64Ptr(in.PreviousValue)
+	out.Delta = copyFloat64Ptr(in.Delta)
+	out.Threshold = copyFloat64Ptr(in.Threshold)
+	out.Passed = copyBoolPtr(in.Passed)
+}
+
+func (in *BenchmarkResult) DeepCopy() *BenchmarkResult {
+	if in == nil {
+		return nil
+	}
+	out := new(BenchmarkResult)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *EmbeddingQualityMetrics) DeepCopyInto(out *EmbeddingQualityMetrics) {
+	*out = *in
+	out.RetrievalRecallAt10 = copyFloat64Ptr(in.RetrievalRecallAt10)
+	out.NDCG = copyFloat64Ptr(in.NDCG)
+	out.MRR = copyFloat64Ptr(in.MRR)
+	out.InterClassDistance = copyFloat64Ptr(in.InterClassDistance)
+	out.IntraClassVariance = copyFloat64Ptr(in.IntraClassVariance)
+}
+
+func (in *EmbeddingQualityMetrics) DeepCopy() *EmbeddingQualityMetrics {
+	if in == nil {
+		return nil
+	}
+	out := new(EmbeddingQualityMetrics)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *EvalMetrics) DeepCopyInto(out *EvalMetrics) {
+	*out = *in
+	if in.Benchmarks != nil {
+		in, out := &in.Benchmarks, &out.Benchmarks
+		*out = make([]BenchmarkResult, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
+	if in.QuantizationSensitivity != nil {
+		in, out := &in.QuantizationSensitivity, &out.QuantizationSensitivity
+		*out = make(map[string]float64, len(*in))
+		for k, v := range *in {
+			(*out)[k] = v
+		}
+	}
+	out.InferenceLatencyP50Ms = copyFloat64Ptr(in.InferenceLatencyP50Ms)
+	out.InferenceLatencyP99Ms = copyFloat64Ptr(in.InferenceLatencyP99Ms)
+	if in.EmbeddingQuality != nil {
+		in, out := &in.EmbeddingQuality, &out.EmbeddingQuality
+		*out = new(EmbeddingQualityMetrics)
+		(*in).DeepCopyInto(*out)
+	}
+	if in.EvalTime != nil {
+		in, out := &in.EvalTime, &out.EvalTime
+		*out = (*in).DeepCopy()
+	}
+}
+
+func (in *EvalMetrics) DeepCopy() *EvalMetrics {
+	if in == nil {
+		return nil
+	}
+	out := new(EvalMetrics)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *DeploymentMetrics) DeepCopyInto(out *DeploymentMetrics) {
+	*out = *in
+	out.ConversionTimeSec = copyFloat64Ptr(in.ConversionTimeSec)
+	out.OutputSizeGB = copyFloat64Ptr(in.OutputSizeGB)
+	out.MaxAbsError = copyFloat64Ptr(in.MaxAbsError)
+	out.LoadTimeSec = copyFloat64Ptr(in.LoadTimeSec)
+	out.ServingMemoryGB = copyFloat64Ptr(in.ServingMemoryGB)
+	out.TimeToFirstTokenMs = copyFloat64Ptr(in.TimeToFirstTokenMs)
+	out.SmokeTestPassed = copyBoolPtr(in.SmokeTestPassed)
+	if in.DeployedAt != nil {
+		in, out := &in.DeployedAt, &out.DeployedAt
+		*out = (*in).DeepCopy()
+	}
+}
+
+func (in *DeploymentMetrics) DeepCopy() *DeploymentMetrics {
+	if in == nil {
+		return nil
+	}
+	out := new(DeploymentMetrics)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *ServingMetrics) DeepCopyInto(out *ServingMetrics) {
+	*out = *in
+	out.RoutingAccuracy = copyFloat64Ptr(in.RoutingAccuracy)
+	out.RoutingAccuracyP7d = copyFloat64Ptr(in.RoutingAccuracyP7d)
+	out.EmbeddingDriftKL = copyFloat64Ptr(in.EmbeddingDriftKL)
+	out.EmbeddingDriftMMD = copyFloat64Ptr(in.EmbeddingDriftMMD)
+	out.LatencyP50Ms = copyFloat64Ptr(in.LatencyP50Ms)
+	out.LatencyP95Ms = copyFloat64Ptr(in.LatencyP95Ms)
+	out.LatencyP99Ms = copyFloat64Ptr(in.LatencyP99Ms)
+	out.RequestsPerSecond = copyFloat64Ptr(in.RequestsPerSecond)
+	out.QueueDepth = copyFloat64Ptr(in.QueueDepth)
+	out.CacheHitRate = copyFloat64Ptr(in.CacheHitRate)
+	out.ABCurrentValue = copyFloat64Ptr(in.ABCurrentValue)
+	out.ABBaselineValue = copyFloat64Ptr(in.ABBaselineValue)
+	out.ABPValue = copyFloat64Ptr(in.ABPValue)
+	out.ReformulationRate = copyFloat64Ptr(in.ReformulationRate)
+	if in.LastScraped != nil {
+		in, out := &in.LastScraped, &out.LastScraped
+		*out = (*in).DeepCopy()
+	}
+}
+
+func (in *ServingMetrics) DeepCopy() *ServingMetrics {
+	if in == nil {
+		return nil
+	}
+	out := new(ServingMetrics)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *CheckpointMetrics) DeepCopyInto(out *CheckpointMetrics) {
+	*out = *in
+	if in.LastSaved != nil {
+		in, out := &in.LastSaved, &out.LastSaved
+		*out = (*in).DeepCopy()
+	}
+	out.SizeGB = copyFloat64Ptr(in.SizeGB)
+	out.SaveDurationSec = copyFloat64Ptr(in.SaveDurationSec)
+	out.Validated = copyBoolPtr(in.Validated)
+}
+
+func (in *CheckpointMetrics) DeepCopy() *CheckpointMetrics {
+	if in == nil {
+		return nil
+	}
+	out := new(CheckpointMetrics)
+	in.DeepCopyInto(out)
 	return out
 }

@@ -87,8 +87,9 @@ This is agent-infra-model co-design: the agent system, the training infrastructu
 
 | Document | What it covers |
 |---|---|
-| [CRD Reference](docs/crd.md) | TrainJob spec, ModelArchSpec, CheckpointSpec, status fields, YAML examples |
-| [Design](docs/design.md) | Workflow (admission → prolog → workers → monitoring → deletion), auto-parallelism advisor (hierarchical search, pruning, caching), webhook efficiency |
+| [CRD Reference](docs/crd.md) | TrainJob spec, ModelArchSpec, CheckpointSpec, MetricsConfig, EvalConfig, status fields, YAML examples |
+| [Design](docs/design.md) | Workflow (admission → prolog → workers → monitoring → eval → deletion), auto-parallelism advisor, webhook efficiency |
+| [Observability](docs/observability.md) | Four-stage metrics pipeline (training → eval → deployment → serving), feedback loops, metrics-collector sidecar, Prometheus export, agent-consumable status fields |
 | [Kueue Integration](docs/kueue.md) | Suspend-based admission, child resource isolation, standalone mode |
 | [Comparison & Limitations](docs/comparison.md) | vs. Kubeflow, Kueue, Volcano, NeMo, TAS; known limitations; production gaps |
 | [Agent System](agents/README.md) | 8 specialized agents, interaction diagrams, coordination protocol, model-install agent, run→observe→eval→iterate harness engineering pipeline |
@@ -141,8 +142,10 @@ internal/controller/
   trainjob_controller_test.go    envtest-based integration tests
   suite_test.go                  Envtest suite setup (k8sClient, manager bootstrap)
   prolog.go                      Prolog Job builder (3-phase GPU health check)
-  workers.go                     Headless Service + worker StatefulSet + GPU sidecar builder
+  workers.go                     Headless Service + worker StatefulSet + sidecar builders
   checkpoint.go                  Checkpoint validation Job builder
+  eval.go                        Post-training eval Job builder
+  metrics_collector.go           Metrics-collector sidecar builder and status patching
 
 internal/webhook/
   trainjob_validator.go          Validating webhook (~10 rules)
@@ -153,6 +156,7 @@ internal/webhook/
 docs/
   crd.md                         CRD reference and examples
   design.md                      Workflow, auto-parallelism, webhook efficiency
+  observability.md               Four-stage metrics pipeline and feedback loops
   kueue.md                       Kueue integration details
   comparison.md                  Framework comparison and limitations
 

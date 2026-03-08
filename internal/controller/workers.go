@@ -155,8 +155,8 @@ func buildWorkerStatefulSet(tj *aiv1.TrainJob) *appsv1.StatefulSet {
 		},
 	}
 
-	// Build container list: trainer + optional gpu-monitor sidecar.
-	// Sidecar is included directly in the StatefulSet pod template instead
+	// Build container list: trainer + optional sidecars.
+	// Sidecars are included directly in the StatefulSet pod template instead
 	// of being injected via a cluster-wide pod webhook. This eliminates the
 	// need for a MutatingWebhookConfiguration on pods and makes the operator
 	// fully self-service (no cluster-scoped resources needed).
@@ -166,6 +166,18 @@ func buildWorkerStatefulSet(tj *aiv1.TrainJob) *appsv1.StatefulSet {
 	if sidecarEnabled {
 		sidecar := buildGPUMonitorSidecar()
 		containers = append(containers, sidecar)
+	}
+
+	mcEnabled := metricsCollectorEnabled(tj)
+	if mcEnabled {
+		mc := buildMetricsCollectorSidecar(tj)
+		containers = append(containers, mc)
+
+		// The trainer container also needs the shared volume mount for writing metrics
+		containers[0].VolumeMounts = append(containers[0].VolumeMounts,
+			corev1.VolumeMount{Name: metricsVolumeName, MountPath: metricsVolumePath})
+		containers[0].Env = append(containers[0].Env,
+			corev1.EnvVar{Name: "METRICS_OUTPUT_FILE", Value: metricsFilePath(tj)})
 	}
 
 	volumes := []corev1.Volume{
@@ -191,6 +203,15 @@ func buildWorkerStatefulSet(tj *aiv1.TrainJob) *appsv1.StatefulSet {
 	if sidecarEnabled {
 		volumes = append(volumes, corev1.Volume{
 			Name: "sidecar-logs",
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		})
+	}
+
+	if mcEnabled {
+		volumes = append(volumes, corev1.Volume{
+			Name: metricsVolumeName,
 			VolumeSource: corev1.VolumeSource{
 				EmptyDir: &corev1.EmptyDirVolumeSource{},
 			},

@@ -23,10 +23,31 @@
 | `skipProlog` | bool | no | Skip the GPU health check. Fine for short test jobs. |
 | `enableSidecar` | *bool | no | Enable the GPU monitoring sidecar on worker pods. Defaults to true. |
 | `suspend` | *bool | no | Hold job creation. Used by Kueue for suspend-based admission. Auto-set by webhook when `kueue.x-k8s.io/queue-name` label is present. |
+| `metricsConfig` | MetricsConfig | no | Enable metrics-collector sidecar for live training metrics. See [Observability](observability.md). |
+| `evalConfig` | EvalConfig | no | Post-training evaluation. Creates an eval Job after training succeeds. |
 | `command`, `args`, `env` | - | no | Container command overrides and extra environment variables. |
 | `cpuPerNode`, `memPerNode` | quantity | no | CPU and memory requests per worker. |
 
 FSDP degree is not a user-facing field — it's inferred as `totalGPUs / (TP × PP × CP)`.
+
+## MetricsConfig
+
+| Field | Type | Description |
+|---|---|---|
+| `enabled` | bool | Whether to add the metrics-collector sidecar |
+| `metricsFilePath` | string | Path where the training script writes metrics JSON. Default: `/var/run/training/metrics.json` |
+| `scrapeIntervalSeconds` | *int32 | How often the sidecar reads the metrics file. Default: 30 |
+| `prometheusPort` | *int32 | Port for Prometheus metrics export. Default: 9402 |
+
+## EvalConfig
+
+| Field | Type | Description |
+|---|---|---|
+| `image` | string | Eval container image (defaults to training image) |
+| `command`, `args` | []string | Eval container command and arguments |
+| `datasetPath` | string | Path to eval dataset (PVC mount or S3 URI) |
+| `previousModelPath` | string | Path to previous model for regression comparison |
+| `gpusPerNode` | *int32 | GPU count for eval (defaults to training value) |
 
 ## ModelArchSpec
 
@@ -57,14 +78,19 @@ Optional, but enables memory/bandwidth validation and is required for auto-paral
 
 | Field | Description |
 |---|---|
-| `phase` | Current lifecycle phase (see [Workflow](design.md#workflow)) |
+| `phase` | Current lifecycle phase (see [Workflow](design.md#workflow)). Now includes `Evaluating`. |
 | `conditions` | Standard Kubernetes conditions |
 | `startTime` / `completionTime` | Timestamps |
-| `currentStep` | Training iteration (if reported by workers) |
+| `currentStep` / `totalSteps` | Training iteration progress |
 | `lastCheckpoint` / `lastCheckpointTime` | Most recent valid checkpoint |
 | `healthyNodes` / `totalNodes` | Nodes that passed prolog vs. allocated |
 | `readyWorkers` | Worker pods in Ready state |
 | `failureReason` / `failureMessage` | Why the job failed |
+| `training` | Live training metrics (loss, gradients, throughput, hardware events). See [Observability](observability.md#stage-1-training-metrics). |
+| `eval` | Post-training evaluation results (benchmarks, regression, verdict). See [Observability](observability.md#stage-2-eval-metrics). |
+| `deployment` | Model conversion and loading metrics. See [Observability](observability.md#stage-3-deployment-metrics). |
+| `serving` | Production serving metrics (routing accuracy, drift, latency). See [Observability](observability.md#stage-4-serving-metrics). |
+| `checkpointStatus` | Detailed checkpoint subsystem info (size, save duration, validation counts). |
 
 ## Quick Example
 

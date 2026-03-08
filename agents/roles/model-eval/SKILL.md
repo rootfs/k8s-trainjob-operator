@@ -93,19 +93,65 @@ Track metric history across runs. Flag if the latest score is > 2 standard devia
 
 For the initial implementation, use **relative threshold** with a default of 2%. Statistical detection is a follow-up.
 
+## Structured Output: status.eval
+
+The eval Job writes results to `/var/run/eval/results.json`, which gets patched into
+`status.eval` on the TrainJob CR. The status schema is defined in `api/v1alpha1/types.go`
+as `EvalMetrics`:
+
+```yaml
+status:
+  eval:
+    benchmarks:
+      - name: retrieval-recall@10
+        value: 0.847
+        previousValue: 0.831
+        delta: 0.016
+        threshold: 0.80
+        passed: true
+      - name: ndcg@10
+        value: 0.723
+        previousValue: 0.715
+        delta: 0.008
+        passed: true
+    quantizationSensitivity:
+      fp16: 0.845
+      int8: 0.839
+      fp8: 0.801
+    inferenceLatencyP50Ms: 4.2
+    inferenceLatencyP99Ms: 12.8
+    embeddingQuality:
+      retrievalRecallAt10: 0.847
+      ndcg: 0.723
+      mrr: 0.691
+      interClassDistance: 0.42
+      intraClassVariance: 0.08
+    evalTime: "2026-03-08T14:30:00Z"
+    verdict: "promote"
+```
+
+The eval script must write this JSON to `$EVAL_OUTPUT_FILE` (default `/var/run/eval/results.json`).
+The reconciler patches `status.eval` after the eval Job completes. Agents (model-install,
+model-trainer) read these fields to decide whether to deploy or retrain.
+
+The `verdict` field should be one of: `promote` (ready for deployment), `rollback` (worse than
+previous), or `retrain` (specific metrics need improvement). The model-install agent will only
+proceed if `verdict == "promote"`.
+
 ## Constraints
 
 - The eval Job must use the same image as training (or a user-specified eval image) to ensure model loading compatibility.
 - Eval Jobs should carry `kueue.x-k8s.io/queue-name: none` like other child resources.
 - Eval should be optional — disabled by default, no impact on existing TrainJob CRs without EvalSpec.
 - The eval Job needs GPU access (at least 1 GPU) to load and run the model.
-- Eval results should be surfaced in TrainJobStatus (e.g., `status.evalResults` map and `status.evalPassed` bool).
+- Eval results are written to `status.eval` as structured `EvalMetrics`. This replaces the older
+  idea of putting results in annotations or ConfigMaps.
 - After changes, run `go build ./...` and `go vet ./...`.
 
 ## Files to Read First
 
-1. `internal/controller/checkpoint.go` — the checkpoint validation Job builder (model for how to structure the eval Job)
-2. `internal/controller/trainjob_controller.go` — reconciler state machine (where to add the eval phase)
-3. `api/v1alpha1/types.go` — CRD types (where to add EvalSpec and eval status fields)
+1. `internal/controller/eval.go` — eval Job builder (already implemented)
+2. `internal/controller/trainjob_controller.go` — reconciler state machine with PhaseEvaluating
+3. `api/v1alpha1/types.go` — CRD types: EvalConfig (spec), EvalMetrics + BenchmarkResult + EmbeddingQualityMetrics (status)
 4. `internal/webhook/model_registry.go` — where baseline metrics per model would live
 5. `examples/trainjob_sample.yaml` — add eval-enabled examples

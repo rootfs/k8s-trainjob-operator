@@ -545,30 +545,58 @@ Being straightforward about what doesn't work or isn't great:
 
 ---
 
+## Building
+
+Requires Go 1.24+.
+
+```bash
+make          # fmt, vet, build → bin/trainjob-operator
+make test     # run envtest-based controller tests
+make run      # run locally against current kubeconfig
+```
+
+Docker:
+
+```bash
+make docker-build IMG=ghcr.io/rootfs/trainjob-operator:latest
+make docker-push  IMG=ghcr.io/rootfs/trainjob-operator:latest
+```
+
+Run `make help` to see all targets.
+
+---
+
 ## Project Structure
 
 ```
 api/v1alpha1/
-  types.go                    CRD types (TrainJobSpec, TrainJobStatus, phases)
+  types.go                       CRD types (TrainJobSpec, TrainJobStatus, phases)
+  groupversion_info.go           GroupVersion, SchemeBuilder, AddToScheme
+  zz_generated.deepcopy.go       DeepCopy implementations for all CRD types
 
 cmd/
-  main.go                     Entry point: manager, controller, webhooks, health checks
+  main.go                        Entry point: manager, controller, webhooks, health checks
 
 internal/controller/
-  trainjob_controller.go      Reconciler with state-machine phase transitions
-  trainjob_controller_test.go envtest-based integration tests
-  prolog.go                   Prolog Job builder (3-phase GPU health check)
-  workers.go                  Headless Service + worker StatefulSet builder
-  checkpoint.go               Checkpoint validation Job builder
+  trainjob_controller.go         Reconciler with state-machine phase transitions
+  trainjob_controller_test.go    envtest-based integration tests
+  suite_test.go                  Envtest suite setup (k8sClient, manager bootstrap)
+  prolog.go                      Prolog Job builder (3-phase GPU health check)
+  workers.go                     Headless Service + worker StatefulSet + GPU sidecar builder
+  checkpoint.go                  Checkpoint validation Job builder
 
 internal/webhook/
-  trainjob_validator.go       Validating webhook (~10 rules)
-  trainjob_mutator.go         Mutating webhook (auto-parallelism, NCCL env, defaults, sidecar)
-  auto_config.go              Auto-parallelism search engine
-  model_registry.go           Built-in model architectures and GPU specs
+  trainjob_validator.go          Validating webhook (~10 rules)
+  trainjob_mutator.go            Mutating webhook (auto-parallelism, NCCL env, defaults, Kueue suspend)
+  auto_config.go                 Auto-parallelism search engine (hierarchical, cached)
+  model_registry.go              Built-in model architectures and GPU specs
 
 examples/
-  trainjob_sample.yaml        Sample CRs (manual, auto, rejected configs)
+  trainjob_sample.yaml           Sample CRs (manual, auto, Kueue, standalone, rejected configs)
+
+Makefile                         Build, test, lint, docker targets
+Dockerfile                       Multi-stage build (distroless runtime)
+go.mod / go.sum                  Go module (github.com/rootfs/trainjob-operator)
 ```
 
 ---
